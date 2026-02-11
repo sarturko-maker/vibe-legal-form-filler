@@ -1,8 +1,8 @@
-"""OOXML utilities — re-export barrel for snippet matching and formatting modules.
+"""OOXML utilities — re-export barrel for snippet matching, formatting, and
+validation modules.
 
-This module re-exports all public symbols from xml_snippet_matching and
-xml_formatting so that existing imports like `from src.xml_utils import ...`
-continue to work without changes.
+This module re-exports all public symbols so that existing imports like
+`from src.xml_utils import ...` continue to work without changes.
 """
 
 from src.xml_snippet_matching import (  # noqa: F401
@@ -14,5 +14,6 @@ from src.xml_snippet_matching import (  # noqa: F401
 from src.xml_formatting import (  # noqa: F401
     build_run_xml,
     extract_formatting,
-    is_well_formed_ooxml,
 )
+
+from src.xml_validation import is_well_formed_ooxml  # noqa: F401

@@ -1,8 +1,12 @@
-"""Word (.docx) handler — extract, validate, build XML, write."""
+"""Word (.docx) handler — extract, validate, build XML, write.
+
+This is the main entry point for all Word document operations. Extract and
+validate logic lives here; write and field detection are in word_writer.py
+and word_fields.py respectively.
+"""
 
 from __future__ import annotations
 
-import re
 import zipfile
 from io import BytesIO
 
@@ -15,7 +19,6 @@ from src.models import (
     BuildInsertionXmlResponse,
     ExtractStructureResponse,
     FormField,
-    InsertionMode,
     LocationSnippet,
     LocationStatus,
     ValidatedLocation,
@@ -26,8 +29,13 @@ from src.xml_utils import (
     extract_formatting,
     find_snippet_in_body,
     is_well_formed_ooxml,
-    parse_snippet,
 )
+
+from src.handlers.word_fields import (
+    _get_context_text,
+    list_form_fields as _list_form_fields_impl,
+)
+from src.handlers.word_writer import write_answers as _write_answers_impl
 
 WORD_NAMESPACE_URI = NAMESPACES["w"]
 
@@ -54,18 +62,6 @@ def extract_structure(file_bytes: bytes) -> ExtractStructureResponse:
     return ExtractStructureResponse(body_xml=body_xml)
 
 
-def _get_context_text(element: etree._Element, max_chars: int = 100) -> str:
-    """Get neighbouring text content for human review context."""
-    texts: list[str] = []
-    for t_elem in element.iter(f"{{{WORD_NAMESPACE_URI}}}t"):
-        if t_elem.text:
-            texts.append(t_elem.text)
-    text = " ".join(texts)
-    if len(text) > max_chars:
-        text = text[:max_chars] + "..."
-    return text
-
-
 def validate_locations(
     file_bytes: bytes, locations: list[LocationSnippet]
 ) -> list[ValidatedLocation]:
@@ -83,7 +79,6 @@ def validate_locations(
                 status=LocationStatus.NOT_FOUND,
             ))
         elif len(xpaths) == 1:
-            # Get context text from the matched element
             matched = body_root.xpath(xpaths[0], namespaces=NAMESPACES)
             context = ""
             if matched:
@@ -134,182 +129,13 @@ def build_insertion_xml(request: BuildInsertionXmlRequest) -> BuildInsertionXmlR
     )
 
 
-def _replace_content(target: etree._Element, insertion_xml: str) -> None:
-    """Clear existing content in target and insert new XML."""
-    # Remove all child elements except pPr (paragraph properties)
-    for child in list(target):
-        if child.tag != f"{{{WORD_NAMESPACE_URI}}}pPr":
-            target.remove(child)
-    # Clear any direct text
-    target.text = None
-
-    # Parse and insert the new content
-    new_elem = parse_snippet(insertion_xml)
-    if new_elem is not None:
-        target.append(new_elem)
-
-
-def _append_content(target: etree._Element, insertion_xml: str) -> None:
-    """Append new content after existing content in target."""
-    new_elem = parse_snippet(insertion_xml)
-    if new_elem is not None:
-        target.append(new_elem)
-
-
-def _replace_placeholder(
-    target: etree._Element, insertion_xml: str, placeholder: str | None = None
-) -> None:
-    """Find placeholder text within the target and replace it.
-
-    If no specific placeholder is given, looks for common patterns:
-    [Enter here], [Enter ...], ___ (3+ underscores).
-    """
-    placeholder_patterns = [
-        re.compile(r"\[Enter[^\]]*\]"),
-        re.compile(r"_{3,}"),
-    ]
-
-    new_elem = parse_snippet(insertion_xml)
-    if new_elem is None:
-        return
-
-    # Get the text from the new element
-    new_text_elem = new_elem.find(f".//{{{WORD_NAMESPACE_URI}}}t")
-    new_text = new_text_elem.text if new_text_elem is not None else ""
-
-    # Search through all <w:t> elements in the target
-    for t_elem in target.iter(f"{{{WORD_NAMESPACE_URI}}}t"):
-        if t_elem.text is None:
-            continue
-
-        if placeholder:
-            if placeholder in t_elem.text:
-                t_elem.text = t_elem.text.replace(placeholder, new_text)
-                return
-        else:
-            for pattern in placeholder_patterns:
-                match = pattern.search(t_elem.text)
-                if match:
-                    t_elem.text = pattern.sub(new_text, t_elem.text)
-                    return
-
-
-def _repackage_docx_zip(file_bytes: bytes, modified_xml: bytes) -> bytes:
-    """Rewrite a .docx ZIP, replacing word/document.xml with modified_xml.
-
-    Copies all other archive entries unchanged.
-    """
-    output = BytesIO()
-    with zipfile.ZipFile(BytesIO(file_bytes)) as zf_in:
-        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf_out:
-            for item in zf_in.infolist():
-                if item.filename == "word/document.xml":
-                    zf_out.writestr(item, modified_xml)
-                else:
-                    zf_out.writestr(item, zf_in.read(item.filename))
-    return output.getvalue()
-
-
-def _apply_answer(body: etree._Element, answer: AnswerPayload) -> None:
-    """Locate a single answer's target by XPath and insert its content."""
-    matched = body.xpath(answer.xpath, namespaces=NAMESPACES)
-    if not matched:
-        raise ValueError(
-            f"XPath '{answer.xpath}' for pair_id '{answer.pair_id}' "
-            f"did not match any element in the document"
-        )
-    target = matched[0]
-
-    if answer.mode == InsertionMode.REPLACE_CONTENT:
-        _replace_content(target, answer.insertion_xml)
-    elif answer.mode == InsertionMode.APPEND:
-        _append_content(target, answer.insertion_xml)
-    elif answer.mode == InsertionMode.REPLACE_PLACEHOLDER:
-        _replace_placeholder(target, answer.insertion_xml)
-
-
 def write_answers(file_bytes: bytes, answers: list[AnswerPayload]) -> bytes:
     """Insert answers at the specified XPaths and return the modified .docx bytes."""
     doc_xml = _read_document_xml(file_bytes)
-    root = etree.fromstring(doc_xml)
-    body = root.find("w:body", NAMESPACES)
-    if body is None:
-        raise ValueError("No <w:body> element found in document.xml")
-
-    for answer in answers:
-        _apply_answer(body, answer)
-
-    modified_xml = etree.tostring(root, xml_declaration=True, encoding="UTF-8",
-                                  standalone=True)
-    return _repackage_docx_zip(file_bytes, modified_xml)
-
-
-def _find_empty_table_cells(
-    body: etree._Element, start_id: int
-) -> tuple[list[FormField], int]:
-    """Find empty table cells following cells with text (Q/A pattern).
-
-    Returns the list of detected fields and the next available field_id counter.
-    """
-    fields: list[FormField] = []
-    counter = start_id
-
-    for tbl in body.iter(f"{{{WORD_NAMESPACE_URI}}}tbl"):
-        for tr in tbl.iter(f"{{{WORD_NAMESPACE_URI}}}tr"):
-            cells = list(tr.iter(f"{{{WORD_NAMESPACE_URI}}}tc"))
-            for i in range(len(cells) - 1):
-                q_text = _get_context_text(cells[i]).strip()
-                a_text = _get_context_text(cells[i + 1]).strip()
-                if q_text and not a_text:
-                    counter += 1
-                    fields.append(FormField(
-                        field_id=f"field_{counter}",
-                        label=q_text,
-                        field_type="table_cell",
-                    ))
-
-    return fields, counter
-
-
-def _find_placeholder_paragraphs(
-    body: etree._Element, start_id: int
-) -> list[FormField]:
-    """Find paragraphs containing placeholder patterns ([Enter ...], ___).
-
-    Returns the list of detected placeholder fields.
-    """
-    placeholder_patterns = [
-        re.compile(r"\[Enter[^\]]*\]"),
-        re.compile(r"_{3,}"),
-    ]
-    fields: list[FormField] = []
-    counter = start_id
-
-    for p_elem in body.iter(f"{{{WORD_NAMESPACE_URI}}}p"):
-        p_text = _get_context_text(p_elem)
-        for pattern in placeholder_patterns:
-            match = pattern.search(p_text)
-            if match:
-                counter += 1
-                fields.append(FormField(
-                    field_id=f"field_{counter}",
-                    label=p_text.strip(),
-                    field_type="placeholder",
-                    current_value=match.group(),
-                ))
-                break  # One field per paragraph
-
-    return fields
+    return _write_answers_impl(doc_xml, file_bytes, answers)
 
 
 def list_form_fields(file_bytes: bytes) -> list[FormField]:
     """Detect empty table cells and placeholder text as fillable targets."""
     doc_xml = _read_document_xml(file_bytes)
-    root = etree.fromstring(doc_xml)
-    body = root.find("w:body", NAMESPACES)
-    if body is None:
-        return []
-
-    table_fields, next_id = _find_empty_table_cells(body, 0)
-    placeholder_fields = _find_placeholder_paragraphs(body, next_id)
-    return table_fields + placeholder_fields
+    return _list_form_fields_impl(doc_xml)
