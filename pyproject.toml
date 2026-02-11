@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "form-filler-mcp"
+version = "0.1.0"
+description = "MCP server exposing form-filling tools for copilot agents"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp",
+    "lxml",
+    "python-docx",
+    "openpyxl",
+    "pypdfform",
+    "pymupdf",
+    "pydantic",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
