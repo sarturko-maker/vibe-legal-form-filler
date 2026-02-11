@@ -1,6 +1,5 @@
 """Tests for OOXML utility functions."""
 
-import pytest
 from lxml import etree
 
 from src.xml_utils import (
@@ -9,7 +8,6 @@ from src.xml_utils import (
     extract_formatting,
     find_snippet_in_body,
     is_well_formed_ooxml,
-    normalise_whitespace,
 )
 
 W = NAMESPACES["w"]
@@ -33,24 +31,6 @@ def _make_paragraph(text: str, font: str = "Calibri", sz: str = "20") -> str:
         f"</w:rPr>"
         f"<w:t>{text}</w:t></w:r></w:p>"
     )
-
-
-class TestNormaliseWhitespace:
-    def test_collapses_between_tags(self) -> None:
-        result = normalise_whitespace("<w:r>  \n  <w:t>hi</w:t>  \n  </w:r>")
-        assert ">  \n  <" not in result
-        assert "><" in result
-
-    def test_strips_outer_whitespace(self) -> None:
-        result = normalise_whitespace("  <w:r/>  ")
-        assert result == "<w:r/>"
-
-    def test_collapses_inner_whitespace(self) -> None:
-        result = normalise_whitespace("<w:t>hello   world</w:t>")
-        assert "hello world" in result
-
-    def test_empty_string(self) -> None:
-        assert normalise_whitespace("") == ""
 
 
 class TestFindSnippetInBody:

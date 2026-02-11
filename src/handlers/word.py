@@ -22,14 +22,14 @@ from src.models import (
 )
 from src.xml_utils import (
     NAMESPACES,
-    _parse_snippet,
     build_run_xml,
     extract_formatting,
     find_snippet_in_body,
     is_well_formed_ooxml,
+    parse_snippet,
 )
 
-W_NS = NAMESPACES["w"]
+WORD_NAMESPACE_URI = NAMESPACES["w"]
 
 
 def _read_document_xml(file_bytes: bytes) -> bytes:
@@ -57,7 +57,7 @@ def extract_structure(file_bytes: bytes) -> ExtractStructureResponse:
 def _get_context_text(element: etree._Element, max_chars: int = 100) -> str:
     """Get neighbouring text content for human review context."""
     texts: list[str] = []
-    for t_elem in element.iter(f"{{{W_NS}}}t"):
+    for t_elem in element.iter(f"{{{WORD_NAMESPACE_URI}}}t"):
         if t_elem.text:
             texts.append(t_elem.text)
     text = " ".join(texts)
@@ -138,20 +138,20 @@ def _replace_content(target: etree._Element, insertion_xml: str) -> None:
     """Clear existing content in target and insert new XML."""
     # Remove all child elements except pPr (paragraph properties)
     for child in list(target):
-        if child.tag != f"{{{W_NS}}}pPr":
+        if child.tag != f"{{{WORD_NAMESPACE_URI}}}pPr":
             target.remove(child)
     # Clear any direct text
     target.text = None
 
     # Parse and insert the new content
-    new_elem = _parse_snippet(insertion_xml)
+    new_elem = parse_snippet(insertion_xml)
     if new_elem is not None:
         target.append(new_elem)
 
 
 def _append_content(target: etree._Element, insertion_xml: str) -> None:
     """Append new content after existing content in target."""
-    new_elem = _parse_snippet(insertion_xml)
+    new_elem = parse_snippet(insertion_xml)
     if new_elem is not None:
         target.append(new_elem)
 
@@ -169,16 +169,16 @@ def _replace_placeholder(
         re.compile(r"_{3,}"),
     ]
 
-    new_elem = _parse_snippet(insertion_xml)
+    new_elem = parse_snippet(insertion_xml)
     if new_elem is None:
         return
 
     # Get the text from the new element
-    new_text_elem = new_elem.find(f".//{{{W_NS}}}t")
+    new_text_elem = new_elem.find(f".//{{{WORD_NAMESPACE_URI}}}t")
     new_text = new_text_elem.text if new_text_elem is not None else ""
 
     # Search through all <w:t> elements in the target
-    for t_elem in target.iter(f"{{{W_NS}}}t"):
+    for t_elem in target.iter(f"{{{WORD_NAMESPACE_URI}}}t"):
         if t_elem.text is None:
             continue
 
@@ -254,9 +254,9 @@ def _find_empty_table_cells(
     fields: list[FormField] = []
     counter = start_id
 
-    for tbl in body.iter(f"{{{W_NS}}}tbl"):
-        for tr in tbl.iter(f"{{{W_NS}}}tr"):
-            cells = list(tr.iter(f"{{{W_NS}}}tc"))
+    for tbl in body.iter(f"{{{WORD_NAMESPACE_URI}}}tbl"):
+        for tr in tbl.iter(f"{{{WORD_NAMESPACE_URI}}}tr"):
+            cells = list(tr.iter(f"{{{WORD_NAMESPACE_URI}}}tc"))
             for i in range(len(cells) - 1):
                 q_text = _get_context_text(cells[i]).strip()
                 a_text = _get_context_text(cells[i + 1]).strip()
@@ -285,7 +285,7 @@ def _find_placeholder_paragraphs(
     fields: list[FormField] = []
     counter = start_id
 
-    for p_elem in body.iter(f"{{{W_NS}}}p"):
+    for p_elem in body.iter(f"{{{WORD_NAMESPACE_URI}}}p"):
         p_text = _get_context_text(p_elem)
         for pattern in placeholder_patterns:
             match = pattern.search(p_text)
