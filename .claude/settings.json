@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "form-filler": {
+      "command": "/home/sarturko/vibe-legal-form-filler/.venv/bin/python",
+      "args": ["-m", "src.server"],
+      "cwd": "/home/sarturko/vibe-legal-form-filler"
+    }
+  }
+}

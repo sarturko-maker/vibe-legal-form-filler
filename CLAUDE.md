@@ -235,6 +235,44 @@ Key library: `PyPDFForm` or `PyMuPDF`.
 - Stateless — no persistent storage between calls
 - All file I/O is bytes in, bytes out
 
+## Vibe Coding Maintenance Principles
+
+This project is maintained by a vibe coder — someone who uses AI to build and maintain code rather than writing it by hand. Every design decision must make it easy for an AI assistant (Claude Code, Copilot, etc.) to understand, modify, and extend the codebase in future sessions without context from previous ones.
+
+### File size and structure
+- No file longer than 200 lines. If a file grows beyond this, split it into focused modules.
+- Each file does one thing and has a docstring at the top explaining what it does and why it exists.
+- Each function does one thing and has a docstring explaining: what it takes, what it returns, and when you'd call it.
+- No function longer than 40 lines. If it's longer, break it into named helper functions with clear names.
+
+### Naming over comments
+- Function and variable names should be self-explanatory. Prefer `find_snippet_in_body()` over `match()`.
+- Comments explain WHY, not WHAT. The code tells you what; the comment tells you the reasoning or the gotcha.
+- No abbreviations in public function names. `extract_structure` not `ext_struct`.
+
+### No clever code
+- Explicit is better than clever. No metaprogramming, no dynamic dispatch, no decorators that hide logic.
+- No deep inheritance. Flat is better than nested.
+- If a pattern appears twice, that's fine. If it appears three times, extract it into a clearly named helper.
+- Prefer simple if/else over complex comprehensions or chained operations.
+
+### Dependency between files
+- Each module should be understandable in isolation. A future AI session should be able to read one file and know what it does without reading the whole codebase.
+- Import dependencies should flow one way: server.py → handlers → xml_utils/validators → models. Never circular.
+- Shared constants (namespaces, field types, etc.) live in one place and are imported everywhere else.
+
+### Tests as documentation
+- Each test file mirrors the source file it tests.
+- Test function names describe the scenario: `test_validate_locations_returns_not_found_for_missing_snippet`.
+- Tests are the first thing a new AI session should read to understand what a module does.
+- If a bug is fixed, a test is added that would have caught it.
+
+### Change safety
+- Before changing any function, run its tests. After changing it, run them again.
+- If a change touches xml_utils.py, run all tests — other modules depend on it.
+- Never change a function signature without updating all callers and their tests.
+- Each commit should leave all tests passing. No "will fix later" commits.
+
 ## OOXML Namespace Handling
 
 Word OOXML uses namespaces extensively. Always register them:

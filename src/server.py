@@ -131,3 +131,7 @@ def list_form_fields(file_bytes_b64: str, file_type: str) -> dict:
         return {"fields": [f.model_dump() for f in fields]}
 
     raise NotImplementedError(f"list_form_fields not yet implemented for {ft.value}")
+
+
+if __name__ == "__main__":
+    mcp.run()
