@@ -23,9 +23,6 @@ the expected answer text actually appears at each XPath location.
 
 from __future__ import annotations
 
-import zipfile
-from io import BytesIO
-
 from lxml import etree
 
 from src.models import (
@@ -34,16 +31,12 @@ from src.models import (
     ExpectedAnswer,
     VerificationReport,
 )
-from src.validators import build_verification_summary
+from src.verification import build_verification_summary
 from src.xml_utils import NAMESPACES, SECURE_PARSER
 
+from src.handlers.word_parser import read_document_xml
+
 WORD_NAMESPACE_URI = NAMESPACES["w"]
-
-
-def _read_document_xml(file_bytes: bytes) -> bytes:
-    """Extract word/document.xml from a .docx ZIP archive."""
-    with zipfile.ZipFile(BytesIO(file_bytes)) as zf:
-        return zf.read("word/document.xml")
 
 
 def _extract_text(element: etree._Element) -> str:
@@ -127,7 +120,7 @@ def verify_output(
     Returns a report with structural issues, per-answer content results,
     and a summary with counts.
     """
-    doc_xml = _read_document_xml(file_bytes)
+    doc_xml = read_document_xml(file_bytes)
     root = etree.fromstring(doc_xml, SECURE_PARSER)
     body = root.find("w:body", NAMESPACES)
     if body is None:

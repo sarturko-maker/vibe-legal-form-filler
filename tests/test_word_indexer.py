@@ -134,10 +134,10 @@ class TestAnswerTargets:
 class TestXPathValidity:
     def test_xpaths_resolve_to_elements(self, table_docx: bytes) -> None:
         """Every XPath in the mapping should resolve to a real element."""
-        from src.handlers.word import _get_body_xml
+        from src.handlers.word_parser import get_body_xml
 
         result = extract_structure_compact(table_docx)
-        body_xml = _get_body_xml(table_docx)
+        body_xml = get_body_xml(table_docx)
         body = etree.fromstring(body_xml.encode("utf-8"))
 
         for element_id, xpath in result.id_to_xpath.items():
@@ -149,10 +149,10 @@ class TestXPathValidity:
 
     def test_vendor_xpaths_resolve(self, vendor_docx: bytes) -> None:
         """XPaths work on the larger vendor questionnaire too."""
-        from src.handlers.word import _get_body_xml
+        from src.handlers.word_parser import get_body_xml
 
         result = extract_structure_compact(vendor_docx)
-        body_xml = _get_body_xml(vendor_docx)
+        body_xml = get_body_xml(vendor_docx)
         body = etree.fromstring(body_xml.encode("utf-8"))
 
         failed = []

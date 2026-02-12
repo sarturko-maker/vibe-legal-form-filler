@@ -400,29 +400,36 @@ vibe-legal-form-filler/
 ├── pyproject.toml
 ├── src/
 │   ├── __init__.py
-│   ├── server.py              # MCP server entry point, tool registration
+│   ├── server.py              # MCP server entry point — thin, imports tool modules, runs mcp
+│   ├── mcp_app.py             # FastMCP instance (shared across tool modules)
+│   ├── tools_extract.py       # MCP tools: extract_compact, extract, validate, build_xml, list_fields
+│   ├── tools_write.py         # MCP tools: write_answers, verify_output
 │   ├── models.py              # Pydantic models for pairs, locations, answers
 │   ├── handlers/
 │   │   ├── __init__.py
-│   │   ├── word.py            # Word handler: extract, validate, build XML, write
-│   │   ├── word_indexer.py    # Compact extraction: walks OOXML body, assigns element IDs,
-│   │   │                      #   detects formatting/complex elements, builds id_to_xpath map
-│   │   ├── word_verifier.py   # Post-write verification: structural validation and
-│   │   │                      #   content verification of filled documents
+│   │   ├── word.py            # Word handler: public API (extract, build XML, write, list fields)
+│   │   ├── word_parser.py     # .docx XML extraction (shared by word handler modules)
+│   │   ├── word_indexer.py    # Compact extraction: walks OOXML body, assigns element IDs
+│   │   ├── word_location_validator.py  # Location validation: element IDs and snippet matching
+│   │   ├── word_element_analysis.py    # Element text/formatting/complexity detection helpers
+│   │   ├── word_writer.py     # Answer insertion: XPath-based content replacement
+│   │   ├── word_fields.py     # Form field detection: empty cells, placeholders
+│   │   ├── word_verifier.py   # Post-write verification: structural + content checks
 │   │   ├── excel.py           # Excel handler: extract, validate, write (thin entry point)
-│   │   ├── excel_indexer.py   # Compact extraction: walks sheets/rows/cells, assigns S-R-C IDs,
-│   │   │                      #   detects formatting/merged cells, builds id_to_xpath map
+│   │   ├── excel_indexer.py   # Compact extraction: walks sheets/rows/cells, assigns S-R-C IDs
 │   │   ├── excel_writer.py    # Answer insertion: writes cell values using openpyxl
 │   │   ├── excel_verifier.py  # Post-write verification: reads cells and compares to expected
 │   │   ├── pdf.py             # PDF handler: thin entry point, delegates to sub-modules
-│   │   ├── pdf_indexer.py     # Compact extraction: walks AcroForm widgets, assigns F-IDs,
-│   │   │                      #   extracts nearby text context, maps field types
+│   │   ├── pdf_indexer.py     # Compact extraction: walks AcroForm widgets, assigns F-IDs
 │   │   ├── pdf_writer.py      # Answer insertion: sets widget values via PyMuPDF
 │   │   ├── pdf_verifier.py    # Post-write verification: reads widget values and compares
 │   │   └── text_extractor.py  # Optional: extract plain text from any supported format
-│   ├── xml_utils.py           # OOXML snippet matching, XPath resolution,
-│   │                          #   formatting inheritance, well-formedness checks
-│   └── validators.py          # Shared validation logic
+│   ├── xml_utils.py           # OOXML re-export barrel (snippet matching, formatting, validation)
+│   ├── xml_snippet_matching.py # Core: snippet matching, XPath building, structural comparison
+│   ├── xml_formatting.py      # OOXML formatting extraction and run building
+│   ├── xml_validation.py      # OOXML element whitelist and well-formedness checks
+│   ├── validators.py          # Shared input validation (file type, path safety, size limits)
+│   └── verification.py        # Shared verification helpers (confidence counting, summaries)
 ├── tests/
 │   ├── test_word.py
 │   ├── test_word_verifier.py

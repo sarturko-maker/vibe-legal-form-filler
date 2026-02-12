@@ -14,20 +14,16 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Word (.docx) handler — extract, validate, build XML, write.
+"""Word (.docx) handler — public API for all Word document operations.
 
-This is the main entry point for all Word document operations. Extract and
-validate logic lives here; write and field detection are in word_writer.py
-and word_fields.py respectively.
+This is the main entry point for Word operations. Delegates to:
+- word_parser.py for .docx XML extraction
+- word_location_validator.py for location validation
+- word_writer.py for answer insertion
+- word_fields.py for form field detection
 """
 
 from __future__ import annotations
-
-import re
-import zipfile
-from io import BytesIO
-
-from lxml import etree
 
 from src.models import (
     AnswerPayload,
@@ -37,142 +33,28 @@ from src.models import (
     ExtractStructureResponse,
     FormField,
     LocationSnippet,
-    LocationStatus,
     ValidatedLocation,
 )
 from src.xml_utils import (
-    NAMESPACES,
-    SECURE_PARSER,
     build_run_xml,
     extract_formatting,
-    find_snippet_in_body,
     is_well_formed_ooxml,
 )
 
 from src.handlers.word_fields import (
-    _get_context_text,
     list_form_fields as _list_form_fields_impl,
 )
+from src.handlers.word_location_validator import (
+    validate_locations,  # noqa: F401 — re-exported as public API
+)
+from src.handlers.word_parser import get_body_xml, read_document_xml
 from src.handlers.word_writer import write_answers as _write_answers_impl
-
-WORD_NAMESPACE_URI = NAMESPACES["w"]
-
-# Matches element IDs from compact extraction: T1-R2-C2 or P5
-ELEMENT_ID_RE = re.compile(r"^(T\d+-R\d+-C\d+|P\d+)$")
-
-
-def _read_document_xml(file_bytes: bytes) -> bytes:
-    """Extract word/document.xml from a .docx ZIP archive."""
-    with zipfile.ZipFile(BytesIO(file_bytes)) as zf:
-        return zf.read("word/document.xml")
-
-
-def _get_body_xml(file_bytes: bytes) -> str:
-    """Extract the <w:body> XML string from a .docx file."""
-    doc_xml = _read_document_xml(file_bytes)
-    root = etree.fromstring(doc_xml, SECURE_PARSER)
-    body = root.find("w:body", NAMESPACES)
-    if body is None:
-        raise ValueError("No <w:body> element found in document.xml")
-    return etree.tostring(body, encoding="unicode")
 
 
 def extract_structure(file_bytes: bytes) -> ExtractStructureResponse:
     """Read a .docx and return the full <w:body> XML as a string."""
-    body_xml = _get_body_xml(file_bytes)
+    body_xml = get_body_xml(file_bytes)
     return ExtractStructureResponse(body_xml=body_xml)
-
-
-def _is_element_id(snippet: str) -> bool:
-    """Check if a snippet looks like an element ID (T1-R2-C2 or P5)."""
-    return bool(ELEMENT_ID_RE.match(snippet.strip()))
-
-
-def validate_locations(
-    file_bytes: bytes, locations: list[LocationSnippet]
-) -> list[ValidatedLocation]:
-    """Match each location against the document body.
-
-    Accepts element IDs (T1-R2-C2, P5) or OOXML snippets.
-    """
-    body_xml = _get_body_xml(file_bytes)
-    body_root = etree.fromstring(body_xml.encode("utf-8"), SECURE_PARSER)
-
-    # Build id_to_xpath mapping once if any location is an element ID
-    id_to_xpath: dict[str, str] | None = None
-    if any(_is_element_id(loc.snippet) for loc in locations):
-        from src.handlers.word_indexer import extract_structure_compact
-        compact = extract_structure_compact(file_bytes)
-        id_to_xpath = compact.id_to_xpath
-
-    results: list[ValidatedLocation] = []
-    for loc in locations:
-        if _is_element_id(loc.snippet):
-            results.append(
-                _validate_element_id(loc, id_to_xpath, body_root)
-            )
-        else:
-            results.append(
-                _validate_snippet(loc, body_xml, body_root)
-            )
-
-    return results
-
-
-def _validate_element_id(
-    loc: LocationSnippet,
-    id_to_xpath: dict[str, str],
-    body_root: etree._Element,
-) -> ValidatedLocation:
-    """Validate a location by looking up its element ID in the id_to_xpath mapping."""
-    element_id = loc.snippet.strip()
-    xpath = id_to_xpath.get(element_id)
-    if xpath is None:
-        return ValidatedLocation(
-            pair_id=loc.pair_id,
-            status=LocationStatus.NOT_FOUND,
-        )
-    matched = body_root.xpath(xpath, namespaces=NAMESPACES)
-    context = ""
-    if matched:
-        context = _get_context_text(matched[0])
-    return ValidatedLocation(
-        pair_id=loc.pair_id,
-        status=LocationStatus.MATCHED,
-        xpath=xpath,
-        context=context,
-    )
-
-
-def _validate_snippet(
-    loc: LocationSnippet,
-    body_xml: str,
-    body_root: etree._Element,
-) -> ValidatedLocation:
-    """Validate a location by searching for its OOXML snippet in the document."""
-    xpaths = find_snippet_in_body(body_xml, loc.snippet)
-
-    if len(xpaths) == 0:
-        return ValidatedLocation(
-            pair_id=loc.pair_id,
-            status=LocationStatus.NOT_FOUND,
-        )
-    if len(xpaths) == 1:
-        matched = body_root.xpath(xpaths[0], namespaces=NAMESPACES)
-        context = ""
-        if matched:
-            context = _get_context_text(matched[0])
-        return ValidatedLocation(
-            pair_id=loc.pair_id,
-            status=LocationStatus.MATCHED,
-            xpath=xpaths[0],
-            context=context,
-        )
-    return ValidatedLocation(
-        pair_id=loc.pair_id,
-        status=LocationStatus.AMBIGUOUS,
-        context=f"Snippet matched {len(xpaths)} locations",
-    )
 
 
 def build_insertion_xml(request: BuildInsertionXmlRequest) -> BuildInsertionXmlResponse:
@@ -207,11 +89,11 @@ def build_insertion_xml(request: BuildInsertionXmlRequest) -> BuildInsertionXmlR
 
 def write_answers(file_bytes: bytes, answers: list[AnswerPayload]) -> bytes:
     """Insert answers at the specified XPaths and return the modified .docx bytes."""
-    doc_xml = _read_document_xml(file_bytes)
+    doc_xml = read_document_xml(file_bytes)
     return _write_answers_impl(doc_xml, file_bytes, answers)
 
 
 def list_form_fields(file_bytes: bytes) -> list[FormField]:
     """Detect empty table cells and placeholder text as fillable targets."""
-    doc_xml = _read_document_xml(file_bytes)
+    doc_xml = read_document_xml(file_bytes)
     return _list_form_fields_impl(doc_xml)

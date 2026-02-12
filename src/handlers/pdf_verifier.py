@@ -31,7 +31,7 @@ from src.models import (
     ExpectedAnswer,
     VerificationReport,
 )
-from src.validators import build_verification_summary
+from src.verification import build_verification_summary
 
 
 def verify_output(

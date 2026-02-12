@@ -67,7 +67,7 @@ def parse_snippet(snippet: str) -> etree._Element | None:
             return None
 
 
-def _build_xpath(element: etree._Element, root: etree._Element) -> str:
+def build_xpath(element: etree._Element, root: etree._Element) -> str:
     """Build an XPath expression from *root* down to *element*.
 
     Walks up the tree from element to root, building positional predicates
@@ -157,7 +157,7 @@ def find_snippet_in_body(body_xml: str, snippet: str) -> list[str]:
     matches: list[str] = []
     for elem in body_root.iter(snippet_tag):
         if _elements_structurally_equal(elem, snippet_elem):
-            xpath = _build_xpath(elem, body_root)
+            xpath = build_xpath(elem, body_root)
             matches.append(xpath)
 
     return matches

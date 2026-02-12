@@ -14,24 +14,12 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""OOXML utilities — re-export barrel for snippet matching, formatting, and
-validation modules.
+"""FastMCP application instance — shared across tool modules.
 
-This module re-exports all public symbols so that existing imports like
-`from src.xml_utils import ...` continue to work without changes.
+Created in a separate module to avoid circular imports between server.py
+(entry point) and the tool modules that register @mcp.tool() decorators.
 """
 
-from src.xml_snippet_matching import (  # noqa: F401
-    NAMESPACES,
-    SECURE_PARSER,
-    build_xpath,
-    find_snippet_in_body,
-    parse_snippet,
-)
+from mcp.server.fastmcp import FastMCP
 
-from src.xml_formatting import (  # noqa: F401
-    build_run_xml,
-    extract_formatting,
-)
-
-from src.xml_validation import is_well_formed_ooxml  # noqa: F401
+mcp = FastMCP("form-filler")

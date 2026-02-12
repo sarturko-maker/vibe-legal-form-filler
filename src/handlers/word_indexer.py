@@ -27,26 +27,20 @@ The output is a few KB instead of ~134KB of raw OOXML.
 
 from __future__ import annotations
 
-import re
 import zipfile
 from io import BytesIO
 
 from lxml import etree
 
 from src.models import CompactStructureResponse
-from src.xml_utils import NAMESPACES, SECURE_PARSER
+from src.xml_utils import NAMESPACES, SECURE_PARSER, build_xpath
 
-W = NAMESPACES["w"]
-
-# Elements that make a cell or paragraph "complex" and require raw XML
-COMPLEX_TAGS = {
-    f"{{{W}}}sdt",           # content controls
-    f"{{{W}}}fldChar",       # legacy form fields
-    f"{{{W}}}txbxContent",   # text boxes
-    f"{{{W}}}object",        # embedded objects
-}
-
-PLACEHOLDER_RE = re.compile(r"\[Enter[^\]]*\]|_{3,}")
+from src.handlers.word_element_analysis import (
+    detect_complex,
+    get_formatting_hints,
+    get_target_marker,
+    get_text,
+)
 
 
 def extract_structure_compact(file_bytes: bytes) -> CompactStructureResponse:
@@ -110,11 +104,9 @@ def _index_table(
         cells = row.findall("w:tc", NAMESPACES)
         for c_idx, cell in enumerate(cells, start=1):
             element_id = f"T{tbl_num}-R{r_idx}-C{c_idx}"
-            xpath = _build_xpath_to(cell, body)
+            xpath = build_xpath(cell, body)
             id_to_xpath[element_id] = xpath
-            _index_cell(
-                cell, element_id, lines, complex_elements
-            )
+            _index_cell(cell, element_id, lines, complex_elements)
 
 
 def _index_cell(
@@ -124,19 +116,18 @@ def _index_cell(
     complex_elements: list[str],
 ) -> None:
     """Build a compact line for a single table cell."""
-    complex_type = _detect_complex(cell)
+    complex_type = detect_complex(cell)
     if complex_type:
         complex_elements.append(element_id)
         raw_snippet = etree.tostring(cell, encoding="unicode")
-        # Truncate very large snippets
         if len(raw_snippet) > 500:
             raw_snippet = raw_snippet[:500] + "..."
         lines.append(f'{element_id}: COMPLEX({complex_type}): {raw_snippet}')
         return
 
-    text = _get_text(cell)
-    hints = _get_formatting_hints(cell, text)
-    target_marker = _get_target_marker(text)
+    text = get_text(cell)
+    hints = get_formatting_hints(cell, text)
+    target_marker = get_target_marker(text)
     hint_str = f" [{', '.join(hints)}]" if hints else ""
     lines.append(f'{element_id}: "{text}"{hint_str}{target_marker}')
 
@@ -150,10 +141,10 @@ def _index_paragraph(
     complex_elements: list[str],
 ) -> None:
     """Build a compact line for a top-level paragraph."""
-    xpath = _build_xpath_to(para, body)
+    xpath = build_xpath(para, body)
     id_to_xpath[element_id] = xpath
 
-    complex_type = _detect_complex(para)
+    complex_type = detect_complex(para)
     if complex_type:
         complex_elements.append(element_id)
         raw_snippet = etree.tostring(para, encoding="unicode")
@@ -162,115 +153,8 @@ def _index_paragraph(
         lines.append(f'{element_id}: COMPLEX({complex_type}): {raw_snippet}')
         return
 
-    text = _get_text(para)
-    hints = _get_formatting_hints(para, text)
-    target_marker = _get_target_marker(text)
+    text = get_text(para)
+    hints = get_formatting_hints(para, text)
+    target_marker = get_target_marker(text)
     hint_str = f" [{', '.join(hints)}]" if hints else ""
     lines.append(f'{element_id}: "{text}"{hint_str}{target_marker}')
-
-
-def _get_text(element: etree._Element) -> str:
-    """Extract all text from w:t elements, joined with no separator."""
-    parts: list[str] = []
-    for t_elem in element.iter(f"{{{W}}}t"):
-        if t_elem.text:
-            parts.append(t_elem.text)
-    return "".join(parts)
-
-
-def _get_formatting_hints(element: etree._Element, text: str) -> list[str]:
-    """Detect bold, italic, shading, empty, and placeholder on an element."""
-    hints: list[str] = []
-
-    if not text.strip():
-        hints.append("empty")
-    elif PLACEHOLDER_RE.search(text):
-        hints.append("placeholder")
-
-    if element.find(f".//{{{W}}}b") is not None:
-        hints.append("bold")
-    if element.find(f".//{{{W}}}i") is not None:
-        hints.append("italic")
-    shd = element.find(f".//{{{W}}}shd")
-    if shd is not None:
-        fill = shd.get(f"{{{W}}}fill", "")
-        if fill and fill.lower() not in ("", "auto", "ffffff"):
-            hints.append("shaded")
-    return hints
-
-
-def _get_target_marker(text: str) -> str:
-    """Return an answer target marker if text is empty or a placeholder."""
-    stripped = text.strip()
-    if not stripped:
-        return " ← answer target"
-    if PLACEHOLDER_RE.search(stripped):
-        return " ← answer target"
-    return ""
-
-
-def _detect_complex(element: etree._Element) -> str | None:
-    """Check if element contains complex OOXML that can't be compacted.
-
-    Returns a string describing the complexity type, or None if simple.
-    """
-    # Check for complex child tags
-    for tag in COMPLEX_TAGS:
-        if element.find(f".//{tag}") is not None:
-            local = tag.split("}")[-1]
-            return local
-
-    # Check for nested tables (table inside a table cell)
-    if etree.QName(element).localname == "tc":
-        nested = element.findall(f".//{{{W}}}tbl")
-        if nested:
-            return "nested_table"
-
-    # Check for gridSpan (merged cells)
-    grid_span = element.find(f".//{{{W}}}gridSpan")
-    if grid_span is not None:
-        val = grid_span.get(f"{{{W}}}val", "")
-        if val and val != "1":
-            return f"gridSpan={val}"
-
-    # Check for vMerge (vertically merged cells)
-    if element.find(f".//{{{W}}}vMerge") is not None:
-        return "vMerge"
-
-    return None
-
-
-def _build_xpath_to(
-    target: etree._Element, root: etree._Element
-) -> str:
-    """Build an XPath from root to target using positional predicates."""
-    parts: list[str] = []
-    current = target
-    while current is not root and current is not None:
-        tag = current.tag
-        qname = _clark_to_prefixed(tag)
-        parent = current.getparent()
-        if parent is not None:
-            same = [c for c in parent if c.tag == current.tag]
-            if len(same) > 1:
-                pos = same.index(current) + 1
-                qname = f"{qname}[{pos}]"
-        parts.append(qname)
-        current = parent
-    parts.reverse()
-    return "./" + "/".join(parts)
-
-
-# Reverse mapping: full URI -> prefix
-_URI_TO_PREFIX = {v: k for k, v in NAMESPACES.items()}
-
-
-def _clark_to_prefixed(tag: str) -> str:
-    """Convert Clark notation {uri}local to prefix:local."""
-    if not tag.startswith("{"):
-        return tag
-    uri, local = tag[1:].split("}", 1)
-    prefix = _URI_TO_PREFIX.get(uri)
-    if prefix:
-        return f"{prefix}:{local}"
-    return local

@@ -64,8 +64,8 @@ def _extract_font_properties(rpr: etree._Element) -> dict:
     return formatting
 
 
-def _extract_size_properties(rpr: etree._Element) -> dict:
-    """Extract font size properties (sz, szCs) from rPr."""
+def _extract_size_and_color(rpr: etree._Element) -> dict:
+    """Extract font size (sz, szCs) and text color from rPr."""
     formatting: dict = {}
     w_ns = NAMESPACES["w"]
 
@@ -81,6 +81,12 @@ def _extract_size_properties(rpr: etree._Element) -> dict:
         if val is not None:
             formatting["szCs"] = val
 
+    color = rpr.find("w:color", NAMESPACES)
+    if color is not None:
+        val = color.get(f"{{{w_ns}}}val")
+        if val is not None:
+            formatting["color"] = val
+
     return formatting
 
 
@@ -94,22 +100,11 @@ def _extract_style_properties(rpr: etree._Element) -> dict:
     if rpr.find("w:i", NAMESPACES) is not None:
         formatting["italic"] = True
 
-    if rpr.find("w:u", NAMESPACES) is not None:
-        u_elem = rpr.find("w:u", NAMESPACES)
+    u_elem = rpr.find("w:u", NAMESPACES)
+    if u_elem is not None:
         val = u_elem.get(f'{{{NAMESPACES["w"]}}}val')
         formatting["underline"] = val or "single"
 
-    return formatting
-
-
-def _extract_color_properties(rpr: etree._Element) -> dict:
-    """Extract text color from rPr."""
-    formatting: dict = {}
-    color = rpr.find("w:color", NAMESPACES)
-    if color is not None:
-        val = color.get(f'{{{NAMESPACES["w"]}}}val')
-        if val is not None:
-            formatting["color"] = val
     return formatting
 
 
@@ -141,9 +136,8 @@ def extract_formatting(element_xml: str) -> dict:
 
     formatting: dict = {}
     formatting.update(_extract_font_properties(rpr))
-    formatting.update(_extract_size_properties(rpr))
+    formatting.update(_extract_size_and_color(rpr))
     formatting.update(_extract_style_properties(rpr))
-    formatting.update(_extract_color_properties(rpr))
     return formatting
 
 
@@ -170,18 +164,13 @@ def _apply_style_properties(rpr: etree._Element, formatting: dict) -> None:
         etree.SubElement(rpr, f"{{{w}}}u", {f"{{{w}}}val": formatting["underline"]})
 
 
-def _apply_size_properties(rpr: etree._Element, formatting: dict) -> None:
-    """Add <w:sz> and <w:szCs> elements to rPr from formatting dict."""
+def _apply_size_and_color(rpr: etree._Element, formatting: dict) -> None:
+    """Add size (sz, szCs) and color elements to rPr from formatting dict."""
     w = NAMESPACES["w"]
     if "sz" in formatting:
         etree.SubElement(rpr, f"{{{w}}}sz", {f"{{{w}}}val": formatting["sz"]})
     if "szCs" in formatting:
         etree.SubElement(rpr, f"{{{w}}}szCs", {f"{{{w}}}val": formatting["szCs"]})
-
-
-def _apply_color_properties(rpr: etree._Element, formatting: dict) -> None:
-    """Add <w:color> element to rPr from formatting dict."""
-    w = NAMESPACES["w"]
     if "color" in formatting:
         etree.SubElement(rpr, f"{{{w}}}color", {f"{{{w}}}val": formatting["color"]})
 
@@ -198,8 +187,7 @@ def build_run_xml(text: str, formatting: dict) -> str:
         rpr = etree.SubElement(r_elem, f"{{{w}}}rPr")
         _apply_font_properties(rpr, formatting)
         _apply_style_properties(rpr, formatting)
-        _apply_size_properties(rpr, formatting)
-        _apply_color_properties(rpr, formatting)
+        _apply_size_and_color(rpr, formatting)
 
     t_elem = etree.SubElement(r_elem, f"{{{w}}}t")
     t_elem.text = text

@@ -26,13 +26,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from src.models import (
-    ContentResult,
-    ContentStatus,
-    ExpectedAnswer,
-    FileType,
-    VerificationSummary,
-)
+from src.models import FileType
 
 # Maximum file size in bytes (50 MB) — reject before reading into memory
 MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -156,66 +150,6 @@ def _resolve_from_path(file_path: str, file_type: str | None) -> tuple[bytes, Fi
 
     validate_file_bytes(raw, ft)
     return raw, ft
-
-
-def count_confidence(expected_answers: list) -> dict:
-    """Count confidence levels across expected answers and build a summary note.
-
-    Works with any list of objects that have a .confidence attribute
-    (e.g. ExpectedAnswer). Returns a dict with confidence_known,
-    confidence_uncertain, confidence_unknown, and confidence_note.
-    """
-    from src.models import Confidence
-
-    known = sum(1 for a in expected_answers if a.confidence == Confidence.KNOWN)
-    uncertain = sum(1 for a in expected_answers if a.confidence == Confidence.UNCERTAIN)
-    unknown = sum(1 for a in expected_answers if a.confidence == Confidence.UNKNOWN)
-
-    parts = []
-    if known:
-        parts.append(f"{known} known")
-    if uncertain:
-        parts.append(f"{uncertain} uncertain")
-    if unknown:
-        parts.append(f"{unknown} unknown")
-    note = ", ".join(parts)
-    if uncertain or unknown:
-        note += " — manual review needed"
-
-    return {
-        "confidence_known": known,
-        "confidence_uncertain": uncertain,
-        "confidence_unknown": unknown,
-        "confidence_note": note,
-    }
-
-
-def build_verification_summary(
-    content_results: list[ContentResult],
-    expected_answers: list[ExpectedAnswer],
-    structural_issues_count: int = 0,
-) -> VerificationSummary:
-    """Build a VerificationSummary from content results and expected answers.
-
-    Counts matched/mismatched/missing statuses and confidence levels.
-    Shared across word, excel, and pdf verifiers.
-    """
-    matched = sum(1 for r in content_results if r.status == ContentStatus.MATCHED)
-    mismatched = sum(
-        1 for r in content_results if r.status == ContentStatus.MISMATCHED
-    )
-    missing = sum(1 for r in content_results if r.status == ContentStatus.MISSING)
-
-    conf_counts = count_confidence(expected_answers)
-
-    return VerificationSummary(
-        total=len(expected_answers),
-        matched=matched,
-        mismatched=mismatched,
-        missing=missing,
-        structural_issues=structural_issues_count,
-        **conf_counts,
-    )
 
 
 def _resolve_from_base64(
