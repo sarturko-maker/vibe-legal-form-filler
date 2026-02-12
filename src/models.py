@@ -134,3 +134,38 @@ class ListFormFieldsRequest(BaseModel):
 
 class ListFormFieldsResponse(BaseModel):
     fields: list[FormField]
+
+
+# ── verify_output ─────────────────────────────────────────────────────────────
+
+class ContentStatus(str, Enum):
+    MATCHED = "matched"
+    MISMATCHED = "mismatched"
+    MISSING = "missing"
+
+
+class ExpectedAnswer(BaseModel):
+    pair_id: str
+    xpath: str
+    expected_text: str
+
+
+class ContentResult(BaseModel):
+    pair_id: str
+    status: ContentStatus
+    expected: str
+    actual: str
+
+
+class VerificationSummary(BaseModel):
+    total: int
+    matched: int
+    mismatched: int
+    missing: int
+    structural_issues: int
+
+
+class VerificationReport(BaseModel):
+    structural_issues: list[str]
+    content_results: list[ContentResult]
+    summary: VerificationSummary

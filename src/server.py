@@ -11,10 +11,12 @@ from src.handlers import word as word_handler
 from src.handlers.word_indexer import (
     extract_structure_compact as word_extract_compact,
 )
+from src.handlers.word_verifier import verify_output as word_verify_output
 from src.models import (
     AnswerPayload,
     AnswerType,
     BuildInsertionXmlRequest,
+    ExpectedAnswer,
     FileType,
     InsertionMode,
     LocationSnippet,
@@ -172,6 +174,35 @@ def write_answers(
         return {"file_bytes_b64": base64.b64encode(result_bytes).decode()}
 
     raise NotImplementedError(f"write_answers not yet implemented for {ft.value}")
+
+
+@mcp.tool()
+def verify_output(
+    expected_answers: list[dict],
+    file_bytes_b64: str = "",
+    file_type: str = "",
+    file_path: str = "",
+) -> dict:
+    """Verify structural integrity and content of a filled document.
+
+    Runs structural validation (OOXML well-formedness) and content verification
+    (compare expected text vs actual at each XPath). Use after write_answers
+    to confirm the output is correct.
+
+    file_path: path to the filled document on disk.
+    file_bytes_b64: base64-encoded file bytes (for programmatic use).
+    expected_answers: list of {pair_id, xpath, expected_text} dicts.
+    """
+    raw, ft = resolve_file_input(
+        file_bytes_b64 or None, file_type or None, file_path or None
+    )
+
+    if ft == FileType.WORD:
+        answers = [ExpectedAnswer(**a) for a in expected_answers]
+        report = word_verify_output(raw, answers)
+        return report.model_dump()
+
+    raise NotImplementedError(f"verify_output not yet implemented for {ft.value}")
 
 
 @mcp.tool()

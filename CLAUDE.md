@@ -74,6 +74,13 @@ STEP 4: WRITE ANSWERS (MCP tool — deterministic)
   Output: completed document bytes with all answers inserted
   Action: locates each target in the XML tree, inserts the answer,
           preserves all other document structure and formatting
+
+STEP 5: VERIFY OUTPUT (MCP tool — deterministic)
+  Input:  filled document bytes, array of {pair_id, xpath, expected_text}
+  Output: verification report with structural issues and content results
+  Action: checks OOXML structural integrity (no bare w:r under w:tc,
+          every w:tc has a w:p), then compares expected text vs actual
+          text at each XPath location
 ```
 
 ### Where Knowledge Lives
@@ -99,6 +106,8 @@ The agent combines all three sources when generating answers. The MCP server onl
 6. Agent calls build_insertion_xml for each answer → gets OOXML to insert
 7. Agent calls write_answers(file_path="form.docx", output_file_path="filled.docx", ...)
    → filled document written to disk
+8. Agent calls verify_output(file_path="filled.docx", expected_answers=[...])
+   → confirms all answers were written correctly and structure is valid
 ```
 
 ## MCP Tools
@@ -214,6 +223,39 @@ Modes:
 
 Returns the complete document as bytes with all answers inserted. When `output_file_path` is provided, writes the result to disk and returns the path instead of base64 bytes.
 
+### `verify_output(file_path | file_bytes_b64, file_type?, expected_answers[]) → verification_report`
+
+Post-write verification tool. Runs after `write_answers` to confirm the output document is structurally valid and all answers were written correctly.
+
+Each expected_answer is:
+```json
+{
+  "pair_id": "q1",
+  "xpath": "/w:body/w:tbl[2]/w:tr[3]/w:tc[2]",
+  "expected_text": "Acme Corporation"
+}
+```
+
+**Structural validation** (Word):
+- No bare `<w:r>` directly under `<w:tc>` (runs must be inside paragraphs)
+- Every `<w:tc>` has at least one `<w:p>` child
+
+**Content verification:**
+- For each expected_answer, locates the element at the XPath
+- Extracts all text from `<w:t>` elements within the target
+- Compares against expected_text (substring match)
+
+Returns:
+```json
+{
+  "structural_issues": ["Bare <w:r> found directly under <w:tc>"],
+  "content_results": [
+    {"pair_id": "q1", "status": "matched", "expected": "Acme Corp", "actual": "Acme Corp"}
+  ],
+  "summary": {"total": 53, "matched": 53, "mismatched": 0, "missing": 0, "structural_issues": 0}
+}
+```
+
 ### `list_form_fields(file_path | file_bytes_b64, file_type?) → fields[]`
 
 A simpler utility. Returns a plain inventory of all fillable targets found by code (not AI). For Word: empty table cells following a cell with text, paragraphs containing common placeholders. For Excel: empty cells adjacent to cells with question-like text. For PDF: named form fields.
@@ -234,6 +276,8 @@ vibe-legal-form-filler/
 │   │   ├── word.py            # Word handler: extract, validate, build XML, write
 │   │   ├── word_indexer.py    # Compact extraction: walks OOXML body, assigns element IDs,
 │   │   │                      #   detects formatting/complex elements, builds id_to_xpath map
+│   │   ├── word_verifier.py   # Post-write verification: structural validation and
+│   │   │                      #   content verification of filled documents
 │   │   ├── excel.py           # Excel handler: extract, validate, write
 │   │   ├── pdf.py             # PDF handler: extract, validate, write
 │   │   └── text_extractor.py  # Optional: extract plain text from any supported format
@@ -242,6 +286,7 @@ vibe-legal-form-filler/
 │   └── validators.py          # Shared validation logic
 ├── tests/
 │   ├── test_word.py
+│   ├── test_word_verifier.py
 │   ├── test_excel.py
 │   ├── test_pdf.py
 │   ├── test_xml_utils.py
@@ -264,7 +309,8 @@ This is the hardest format and the most valuable. Focus here first.
 3. `validate_locations` — accept element IDs (fast XPath lookup) or OOXML snippets (snippet matching against document body)
 4. `build_insertion_xml` — formatting inheritance and XML templating
 5. `write_answers` — XPath-based insertion with replace/append/placeholder modes
-6. `list_form_fields` — heuristic detection of empty answer cells/placeholders
+6. `verify_output` — structural validation and content verification of filled documents
+7. `list_form_fields` — heuristic detection of empty answer cells/placeholders
 
 Key library: `lxml` for XML parsing and XPath. `python-docx` for high-level read/write when appropriate, but `lxml` directly for the OOXML manipulation.
 
@@ -372,7 +418,7 @@ All XPath queries must use these prefixes. Snippet matching should normalise whi
 - Excel fixture: vendor assessment with header row and Q/A columns
 - PDF fixture: fillable form with text fields, checkboxes, dropdowns
 - Test each handler function independently
-- Test the full pipeline: extract → validate → build → write
+- Test the full pipeline: extract → validate → build → write → verify
 - Validate that written documents open correctly in Word/Excel/Acrobat
 - Validate that formatting is preserved after writing
 
