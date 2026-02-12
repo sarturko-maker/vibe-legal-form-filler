@@ -131,6 +131,76 @@ class TestValidateLocations:
         validated = validate_locations(table_docx, locations)
         assert validated[0].status == LocationStatus.NOT_FOUND
 
+    def test_element_id_table_cell_matched(self, table_docx: bytes) -> None:
+        """Element IDs like T1-R1-C1 should resolve via the indexer mapping."""
+        locations = [LocationSnippet(pair_id="q1", snippet="T1-R1-C1")]
+        validated = validate_locations(table_docx, locations)
+
+        assert len(validated) == 1
+        assert validated[0].status == LocationStatus.MATCHED
+        assert validated[0].xpath is not None
+        assert "w:tbl[1]" in validated[0].xpath
+
+    def test_element_id_paragraph_matched(self, table_docx: bytes) -> None:
+        """Paragraph IDs like P1 should resolve via the indexer mapping."""
+        locations = [LocationSnippet(pair_id="p1", snippet="P1")]
+        validated = validate_locations(table_docx, locations)
+
+        assert len(validated) == 1
+        assert validated[0].status == LocationStatus.MATCHED
+        assert validated[0].xpath is not None
+
+    def test_element_id_not_found(self, table_docx: bytes) -> None:
+        """A non-existent element ID should return NOT_FOUND."""
+        locations = [LocationSnippet(pair_id="bad", snippet="T99-R99-C99")]
+        validated = validate_locations(table_docx, locations)
+
+        assert len(validated) == 1
+        assert validated[0].status == LocationStatus.NOT_FOUND
+
+    def test_element_id_multiple(self, table_docx: bytes) -> None:
+        """Multiple element IDs validated in one call."""
+        locations = [
+            LocationSnippet(pair_id="q1", snippet="T1-R1-C1"),
+            LocationSnippet(pair_id="q2", snippet="T1-R1-C2"),
+            LocationSnippet(pair_id="q3", snippet="T1-R2-C1"),
+        ]
+        validated = validate_locations(table_docx, locations)
+
+        assert len(validated) == 3
+        assert all(v.status == LocationStatus.MATCHED for v in validated)
+        # Each should have a distinct XPath
+        xpaths = [v.xpath for v in validated]
+        assert len(set(xpaths)) == 3
+
+    def test_element_id_returns_context(self, table_docx: bytes) -> None:
+        """Element ID validation should return context text from the element."""
+        locations = [LocationSnippet(pair_id="q1", snippet="T1-R1-C1")]
+        validated = validate_locations(table_docx, locations)
+
+        assert validated[0].context is not None
+        assert len(validated[0].context) > 0
+
+    def test_mixed_element_ids_and_snippets(self, table_docx: bytes) -> None:
+        """A call mixing element IDs and OOXML snippets should handle both."""
+        result = extract_structure(table_docx)
+        body = etree.fromstring(result.body_xml.encode("utf-8"))
+        first_tbl = body.find(".//w:tbl", NAMESPACES)
+        rows = first_tbl.findall("w:tr", NAMESPACES)
+        q_cell = rows[1].findall("w:tc", NAMESPACES)[0]
+        q_para = q_cell.find("w:p", NAMESPACES)
+        snippet_xml = etree.tostring(q_para, encoding="unicode")
+
+        locations = [
+            LocationSnippet(pair_id="by_id", snippet="T1-R1-C1"),
+            LocationSnippet(pair_id="by_snippet", snippet=snippet_xml),
+        ]
+        validated = validate_locations(table_docx, locations)
+
+        assert len(validated) == 2
+        assert validated[0].status == LocationStatus.MATCHED
+        assert validated[1].status == LocationStatus.MATCHED
+
 
 # ── build_insertion_xml ──────────────────────────────────────────────────────
 
@@ -335,6 +405,52 @@ class TestWriteAnswers:
         # Should be able to extract structure from the result
         result = extract_structure(result_bytes)
         assert result.body_xml is not None
+
+    def test_replace_content_preserves_tcPr(self, table_docx: bytes) -> None:
+        """replace_content on a w:tc must preserve w:tcPr (cell properties)."""
+        xpath = "./w:tbl[1]/w:tr[2]/w:tc[2]"
+        run_xml = f'<w:r xmlns:w="{W}"><w:t>Acme Corporation</w:t></w:r>'
+        answers = [AnswerPayload(
+            pair_id="q1",
+            xpath=xpath,
+            insertion_xml=run_xml,
+            mode=InsertionMode.REPLACE_CONTENT,
+        )]
+
+        result_bytes = write_answers(table_docx, answers)
+
+        result = extract_structure(result_bytes)
+        body = etree.fromstring(result.body_xml.encode("utf-8"))
+        tc = body.xpath(xpath, namespaces=NAMESPACES)[0]
+        assert tc.find(f"{{{W}}}tcPr") is not None, "w:tcPr was stripped"
+
+    def test_replace_content_wraps_run_in_paragraph_for_tc(
+        self, table_docx: bytes
+    ) -> None:
+        """replace_content on a w:tc must wrap w:r inside a w:p, not bare."""
+        xpath = "./w:tbl[1]/w:tr[2]/w:tc[2]"
+        run_xml = f'<w:r xmlns:w="{W}"><w:t>Acme Corporation</w:t></w:r>'
+        answers = [AnswerPayload(
+            pair_id="q1",
+            xpath=xpath,
+            insertion_xml=run_xml,
+            mode=InsertionMode.REPLACE_CONTENT,
+        )]
+
+        result_bytes = write_answers(table_docx, answers)
+
+        result = extract_structure(result_bytes)
+        body = etree.fromstring(result.body_xml.encode("utf-8"))
+        tc = body.xpath(xpath, namespaces=NAMESPACES)[0]
+
+        # No bare w:r directly under w:tc
+        bare_runs = [c for c in tc if c.tag == f"{{{W}}}r"]
+        assert len(bare_runs) == 0, "w:r inserted directly under w:tc"
+
+        # w:p should contain the answer text
+        paras = tc.findall(f"{{{W}}}p")
+        assert len(paras) >= 1, "No w:p found in cell"
+        assert "Acme Corporation" in etree.tostring(paras[0], encoding="unicode")
 
     def test_invalid_xpath_raises(self, table_docx: bytes) -> None:
         answers = [AnswerPayload(

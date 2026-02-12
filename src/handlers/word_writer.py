@@ -20,14 +20,33 @@ WORD_NAMESPACE_URI = NAMESPACES["w"]
 
 
 def _replace_content(target: etree._Element, insertion_xml: str) -> None:
-    """Clear existing content in target and insert new XML."""
+    """Clear existing content in target and insert new XML.
+
+    Preserves structural property elements (w:pPr for paragraphs,
+    w:tcPr for table cells). When the target is a w:tc, wraps bare
+    w:r elements in a w:p — OOXML requires runs inside paragraphs.
+    """
+    preserve_tags = {
+        f"{{{WORD_NAMESPACE_URI}}}pPr",
+        f"{{{WORD_NAMESPACE_URI}}}tcPr",
+    }
     for child in list(target):
-        if child.tag != f"{{{WORD_NAMESPACE_URI}}}pPr":
+        if child.tag not in preserve_tags:
             target.remove(child)
     target.text = None
 
     new_elem = parse_snippet(insertion_xml)
-    if new_elem is not None:
+    if new_elem is None:
+        return
+
+    is_table_cell = target.tag == f"{{{WORD_NAMESPACE_URI}}}tc"
+    is_run = new_elem.tag == f"{{{WORD_NAMESPACE_URI}}}r"
+
+    if is_table_cell and is_run:
+        para = etree.Element(f"{{{WORD_NAMESPACE_URI}}}p")
+        para.append(new_elem)
+        target.append(para)
+    else:
         target.append(new_elem)
 
 

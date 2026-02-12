@@ -33,6 +33,20 @@ class LocationStatus(str, Enum):
     AMBIGUOUS = "ambiguous"
 
 
+# ── extract_structure_compact ──────────────────────────────────────────────────
+
+class CompactStructureResponse(BaseModel):
+    """Compact indexed representation of document structure.
+
+    compact_text: human-readable indexed representation with element IDs.
+    id_to_xpath: mapping from every element ID to its XPath in the document.
+    complex_elements: list of element IDs flagged as containing complex OOXML.
+    """
+    compact_text: str
+    id_to_xpath: dict[str, str]
+    complex_elements: list[str]
+
+
 # ── extract_structure ──────────────────────────────────────────────────────────
 
 class ExtractStructureRequest(BaseModel):
