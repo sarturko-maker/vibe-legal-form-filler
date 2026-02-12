@@ -96,7 +96,7 @@ def validate_locations(
     Accepts element IDs (T1-R2-C2, P5) or OOXML snippets.
     """
     body_xml = _get_body_xml(file_bytes)
-    body_root = etree.fromstring(body_xml.encode("utf-8"))
+    body_root = etree.fromstring(body_xml.encode("utf-8"), SECURE_PARSER)
 
     # Build id_to_xpath mapping once if any location is an element ID
     id_to_xpath: dict[str, str] | None = None

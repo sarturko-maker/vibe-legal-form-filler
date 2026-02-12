@@ -28,7 +28,7 @@ import re
 from lxml import etree
 
 from src.models import FormField
-from src.xml_utils import NAMESPACES
+from src.xml_utils import NAMESPACES, SECURE_PARSER
 
 WORD_NAMESPACE_URI = NAMESPACES["w"]
 
@@ -108,7 +108,7 @@ def list_form_fields(doc_xml: bytes) -> list[FormField]:
 
     doc_xml: raw word/document.xml bytes from the .docx archive.
     """
-    root = etree.fromstring(doc_xml)
+    root = etree.fromstring(doc_xml, SECURE_PARSER)
     body = root.find("w:body", NAMESPACES)
     if body is None:
         return []

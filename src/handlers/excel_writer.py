@@ -29,6 +29,11 @@ import openpyxl
 
 CELL_ID_RE = re.compile(r"^S(\d+)-R(\d+)-C(\d+)$")
 
+# Characters that trigger formula interpretation in Excel.
+# Values starting with these are written as explicit strings to prevent
+# formula injection (e.g. "=CMD(...)", "+cmd|...").
+_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
 
 def write_answers(
     file_bytes: bytes, answers: list[dict[str, str]]
@@ -46,7 +51,10 @@ def write_answers(
         value = answer["value"]
         sheet_idx, row, col = _parse_cell_id(cell_id)
         ws = _get_worksheet(wb, sheet_idx)
-        ws.cell(row=row, column=col, value=value)
+        cell = ws.cell(row=row, column=col, value=value)
+        # Prevent formula injection: force formula-like values to string type
+        if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+            cell.data_type = "s"
 
     return _save_workbook(wb)
 

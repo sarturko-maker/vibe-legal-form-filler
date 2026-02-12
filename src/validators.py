@@ -235,6 +235,9 @@ def _resolve_from_base64(
         )
 
     ft = validate_file_type(file_type)
-    raw = base64.b64decode(file_bytes_b64)
+    try:
+        raw = base64.b64decode(file_bytes_b64)
+    except Exception:
+        raise ValueError("Invalid base64 encoding in file_bytes_b64")
     validate_file_bytes(raw, ft)
     return raw, ft

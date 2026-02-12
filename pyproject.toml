@@ -8,13 +8,12 @@ version = "0.1.0"
 description = "MCP server exposing form-filling tools for copilot agents"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp",
-    "lxml",
-    "python-docx",
-    "openpyxl",
-    "pypdfform",
-    "pymupdf",
-    "pydantic",
+    "mcp>=1.23.0",
+    "lxml>=4.9.1",
+    "python-docx>=1.0.0",
+    "openpyxl>=3.1.0",
+    "pymupdf>=1.24.0",
+    "pydantic>=2.4.0",
 ]
 
 [project.optional-dependencies]

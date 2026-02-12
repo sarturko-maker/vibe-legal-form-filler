@@ -239,6 +239,36 @@ class TestWriteAnswers:
         assert wb.worksheets[0].cell(row=1, column=1).value == "Question"
         wb.close()
 
+    def test_formula_injection_prevented(self, vendor_xlsx: bytes) -> None:
+        """Values starting with =, +, -, @ must be written as text, not formulas."""
+        import openpyxl
+        from io import BytesIO
+
+        malicious_values = [
+            "=CMD('calc')",
+            "+cmd|'/C calc'!A0",
+            "-1+cmd|'/C calc'!A0",
+            "@SUM(1+1)*cmd|'/C calc'!A0",
+        ]
+        answers = [
+            AnswerPayload(
+                pair_id=f"q{i}",
+                xpath=f"S1-R{i+2}-C2",
+                insertion_xml=val,
+                mode=InsertionMode.REPLACE_CONTENT,
+            )
+            for i, val in enumerate(malicious_values)
+        ]
+        result = write_answers(vendor_xlsx, answers)
+        wb = openpyxl.load_workbook(BytesIO(result))
+        for i, val in enumerate(malicious_values):
+            cell = wb.worksheets[0].cell(row=i + 2, column=2)
+            assert cell.data_type == "s", (
+                f"Cell should be string type, got {cell.data_type!r} for {val!r}"
+            )
+            assert cell.value == val
+        wb.close()
+
     def test_returns_valid_xlsx(self, vendor_xlsx: bytes) -> None:
         import openpyxl
         from io import BytesIO
