@@ -7,7 +7,12 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from src.handlers import excel as excel_handler
 from src.handlers import word as word_handler
+from src.handlers.excel_indexer import (
+    extract_structure_compact as excel_extract_compact,
+)
+from src.handlers.excel_verifier import verify_output as excel_verify_output
 from src.handlers.word_indexer import (
     extract_structure_compact as word_extract_compact,
 )
@@ -55,6 +60,10 @@ def extract_structure_compact(
         result = word_extract_compact(raw)
         return result.model_dump()
 
+    if ft == FileType.EXCEL:
+        result = excel_extract_compact(raw)
+        return result.model_dump()
+
     raise NotImplementedError(
         f"extract_structure_compact not yet implemented for {ft.value}"
     )
@@ -83,6 +92,10 @@ def extract_structure(
         result = word_handler.extract_structure(raw)
         return {"body_xml": result.body_xml}
 
+    if ft == FileType.EXCEL:
+        result = excel_handler.extract_structure(raw)
+        return {"sheets_json": result.sheets_json}
+
     raise NotImplementedError(f"extract_structure not yet implemented for {ft.value}")
 
 
@@ -108,6 +121,11 @@ def validate_locations(
     if ft == FileType.WORD:
         locs = [LocationSnippet(**loc) for loc in locations]
         validated = word_handler.validate_locations(raw, locs)
+        return {"validated": [v.model_dump() for v in validated]}
+
+    if ft == FileType.EXCEL:
+        locs = [LocationSnippet(**loc) for loc in locations]
+        validated = excel_handler.validate_locations(raw, locs)
         return {"validated": [v.model_dump() for v in validated]}
 
     raise NotImplementedError(f"validate_locations not yet implemented for {ft.value}")
@@ -165,15 +183,32 @@ def write_answers(
         ]
         result_bytes = word_handler.write_answers(raw, payloads)
 
-        if output_file_path:
-            out = Path(output_file_path)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(result_bytes)
-            return {"file_path": str(out)}
+    elif ft == FileType.EXCEL:
+        payloads = [
+            AnswerPayload(
+                pair_id=a["pair_id"],
+                xpath=a.get("xpath") or a.get("cell_id", ""),
+                insertion_xml=a.get("insertion_xml") or a.get("value", ""),
+                mode=InsertionMode(
+                    a.get("mode", InsertionMode.REPLACE_CONTENT.value)
+                ),
+            )
+            for a in answers
+        ]
+        result_bytes = excel_handler.write_answers(raw, payloads)
 
-        return {"file_bytes_b64": base64.b64encode(result_bytes).decode()}
+    else:
+        raise NotImplementedError(
+            f"write_answers not yet implemented for {ft.value}"
+        )
 
-    raise NotImplementedError(f"write_answers not yet implemented for {ft.value}")
+    if output_file_path:
+        out = Path(output_file_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(result_bytes)
+        return {"file_path": str(out)}
+
+    return {"file_bytes_b64": base64.b64encode(result_bytes).decode()}
 
 
 @mcp.tool()
@@ -202,6 +237,11 @@ def verify_output(
         report = word_verify_output(raw, answers)
         return report.model_dump()
 
+    if ft == FileType.EXCEL:
+        answers = [ExpectedAnswer(**a) for a in expected_answers]
+        report = excel_verify_output(raw, answers)
+        return report.model_dump()
+
     raise NotImplementedError(f"verify_output not yet implemented for {ft.value}")
 
 
@@ -222,6 +262,10 @@ def list_form_fields(
 
     if ft == FileType.WORD:
         fields = word_handler.list_form_fields(raw)
+        return {"fields": [f.model_dump() for f in fields]}
+
+    if ft == FileType.EXCEL:
+        fields = excel_handler.list_form_fields(raw)
         return {"fields": [f.model_dump() for f in fields]}
 
     raise NotImplementedError(f"list_form_fields not yet implemented for {ft.value}")

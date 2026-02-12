@@ -121,9 +121,17 @@ For Word, the response contains:
 - **`id_to_xpath`** — mapping from every element ID to its XPath in the document
 - **`complex_elements`** — list of IDs flagged as containing complex OOXML
 
-**Element ID scheme:**
+For Excel, the response contains:
+- **`compact_text`** — indexed representation with sheet headers and cell IDs
+- **`id_to_xpath`** — identity mapping (cell ID → cell ID, since the ID is the reference)
+- **`complex_elements`** — always empty (Excel has no complex OOXML)
+
+**Element ID scheme (Word):**
 - `T1-R2-C1` — table 1, row 2, cell 1
 - `P5` — paragraph 5 (top-level, outside any table)
+
+**Element ID scheme (Excel):**
+- `S1-R2-C3` — sheet 1, row 2, column 3 (all 1-indexed, matching openpyxl)
 
 **For simple elements:** outputs ID, text content, and formatting hints (bold, italic, shading, font size).
 
@@ -145,6 +153,25 @@ T2-R1-C3: "Deductible" [bold]
 T2-R2-C1: "General Liability"
 T2-R2-C2: "" [empty] ← answer target
 T2-R2-C3: COMPLEX(gridSpan=2): <w:tc>...</w:tc>
+```
+
+Example compact_text output (Excel):
+```
+=== Sheet 1: "Company Information" ===
+S1-R1-C1: "Question" [bold]
+S1-R1-C2: "Response" [bold]
+S1-R2-C1: "Legal Entity Name"
+S1-R2-C2: "" [empty] ← answer target
+S1-R3-C1: "Registration Number"
+S1-R3-C2: "" [empty] ← answer target
+S1-R8-C1: "Primary Contact"
+S1-R8-C2: "Jane Smith"
+=== Sheet 2: "Insurance Coverage" ===
+S2-R1-C1: "Coverage Type" [bold]
+S2-R1-C2: "Policy Limit" [bold]
+S2-R2-C1: "Professional Indemnity"
+S2-R2-C2: "" [empty] ← answer target
+S2-R5-C1: "Notes:" [merged: S2-R5-C1:S2-R6-C1]
 ```
 
 ### `extract_structure(file_path | file_bytes_b64, file_type?) → document structure` *(alternative)*
@@ -171,11 +198,11 @@ For Word with element IDs: looks up the XPath from the `id_to_xpath` mapping ret
 
 For Word with OOXML snippets: searches the document XML for each snippet. Returns match/no-match and the XPath to the matched element. Handles minor whitespace differences. Flags ambiguous matches (snippet appears more than once).
 
-For Excel: confirms cell references exist and are within sheet bounds.
+For Excel: confirms cell IDs (S1-R2-C3) exist in the workbook. Parses the ID to extract sheet index, row, and column. Checks that the sheet exists and the cell is within the worksheet's used dimensions. Returns the cell ID as the xpath and the cell's current value as context.
 
 For PDF: confirms field names exist in the form.
 
-Returns:
+Returns (Word example):
 ```json
 [
   {
@@ -183,6 +210,18 @@ Returns:
     "status": "matched",
     "xpath": "/w:body/w:tbl[2]/w:tr[3]/w:tc[2]/w:p[1]",
     "context": "neighbouring text for human review"
+  }
+]
+```
+
+Returns (Excel example):
+```json
+[
+  {
+    "pair_id": "q1",
+    "status": "matched",
+    "xpath": "S1-R2-C2",
+    "context": "current cell value or empty"
   }
 ]
 ```
@@ -206,7 +245,7 @@ For PDF: not needed — PyPDFForm fills fields by name.
 
 ### `write_answers(file_path | file_bytes_b64, file_type?, answers[], output_file_path?) → filled_file_bytes`
 
-Each answer is:
+Each answer (Word):
 ```json
 {
   "pair_id": "q1",
@@ -216,7 +255,19 @@ Each answer is:
 }
 ```
 
-Modes:
+Each answer (Excel — simpler, no insertion XML needed):
+```json
+{
+  "pair_id": "q1",
+  "xpath": "S1-R2-C2",
+  "insertion_xml": "Acme Corporation",
+  "mode": "replace_content"
+}
+```
+
+For Excel, `insertion_xml` holds the plain text cell value (not XML). Only `replace_content` mode is supported — it writes the value directly to the cell using openpyxl.
+
+Modes (Word):
 - `replace_content` — clears existing content in the target element, inserts new
 - `append` — adds after existing content
 - `replace_placeholder` — finds placeholder text (e.g. "[Enter here]") within the target and replaces only that
@@ -240,10 +291,13 @@ Each expected_answer is:
 - No bare `<w:r>` directly under `<w:tc>` (runs must be inside paragraphs)
 - Every `<w:tc>` has at least one `<w:p>` child
 
+**Structural validation** (Excel):
+- No structural validation needed (openpyxl guarantees valid .xlsx output)
+- Returns empty structural_issues list
+
 **Content verification:**
-- For each expected_answer, locates the element at the XPath
-- Extracts all text from `<w:t>` elements within the target
-- Compares against expected_text (substring match)
+- For each expected_answer, locates the element at the XPath (Word) or cell ID (Excel)
+- Extracts text content and compares against expected_text (substring match)
 
 Returns:
 ```json
@@ -278,7 +332,11 @@ vibe-legal-form-filler/
 │   │   │                      #   detects formatting/complex elements, builds id_to_xpath map
 │   │   ├── word_verifier.py   # Post-write verification: structural validation and
 │   │   │                      #   content verification of filled documents
-│   │   ├── excel.py           # Excel handler: extract, validate, write
+│   │   ├── excel.py           # Excel handler: extract, validate, write (thin entry point)
+│   │   ├── excel_indexer.py   # Compact extraction: walks sheets/rows/cells, assigns S-R-C IDs,
+│   │   │                      #   detects formatting/merged cells, builds id_to_xpath map
+│   │   ├── excel_writer.py    # Answer insertion: writes cell values using openpyxl
+│   │   ├── excel_verifier.py  # Post-write verification: reads cells and compares to expected
 │   │   ├── pdf.py             # PDF handler: extract, validate, write
 │   │   └── text_extractor.py  # Optional: extract plain text from any supported format
 │   ├── xml_utils.py           # OOXML snippet matching, XPath resolution,
@@ -315,14 +373,16 @@ This is the hardest format and the most valuable. Focus here first.
 Key library: `lxml` for XML parsing and XPath. `python-docx` for high-level read/write when appropriate, but `lxml` directly for the OOXML manipulation.
 
 ### Phase 2: Excel (.xlsx)
-Simpler than Word — no OOXML snippet matching needed.
+Simpler than Word — no OOXML snippet matching needed, no insertion XML building.
 
-1. `extract_structure` — return JSON of sheets, rows, cells
-2. `validate_locations` — confirm cell references exist
-3. `write_answers` — write values to cells using openpyxl
-4. `list_form_fields` — detect Q/A column patterns
+1. `extract_structure_compact` — walk sheets/rows/cells, assign S1-R2-C3 IDs, detect formatting and merged cells
+2. `extract_structure` — return JSON of sheets, rows, cells (raw representation)
+3. `validate_locations` — confirm cell IDs exist and are within sheet bounds
+4. `write_answers` — write values to cells using openpyxl (no insertion XML needed)
+5. `verify_output` — read cell values and compare to expected answers
+6. `list_form_fields` — detect Q/A column patterns and empty answer cells
 
-Key library: `openpyxl`.
+Key library: `openpyxl`. No `build_insertion_xml` — openpyxl writes cell values directly.
 
 ### Phase 3: PDF (fillable forms only)
 Simplest format — named fields with known types.
