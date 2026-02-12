@@ -8,7 +8,7 @@ The typical use case: a company sets up a copilot agent with its institutional k
 
 The MCP server's job is strictly document manipulation. All knowledge — institutional and ad-hoc — lives with the agent.
 
-Starts with Word (.docx), then Excel (.xlsx), then PDF (fillable forms).
+Supports Word (.docx), Excel (.xlsx), and PDF (fillable AcroForm). Word and Excel handlers are complete and MCP-verified. PDF is the final format.
 
 ## Core Design Principle
 
@@ -134,12 +134,21 @@ For Excel, the response contains:
 - **`id_to_xpath`** — identity mapping (cell ID → cell ID, since the ID is the reference)
 - **`complex_elements`** — always empty (Excel has no complex OOXML)
 
+For PDF, the response contains:
+- **`compact_text`** — human-readable inventory of all fillable AcroForm fields, grouped by page, with field types, current values, and nearby text context
+- **`id_to_field`** — mapping from sequential field ID (F1, F2, ...) to native field name, page number, field type, and options (for dropdowns/radio)
+- **`complex_elements`** — always empty (AcroForm fields are simple)
+- **`summary`** — total fields, pages with fields, empty vs pre-filled counts
+
 **Element ID scheme (Word):**
 - `T1-R2-C1` — table 1, row 2, cell 1
 - `P5` — paragraph 5 (top-level, outside any table)
 
 **Element ID scheme (Excel):**
 - `S1-R2-C3` — sheet 1, row 2, column 3 (all 1-indexed, matching openpyxl)
+
+**Element ID scheme (PDF):**
+- `F1`, `F2`, `F3` — sequential field IDs assigned in page order. Stable within a single extraction. Mapped to native field names via `id_to_field`.
 
 **For simple elements:** outputs ID, text content, and formatting hints (bold, italic, shading, font size).
 
@@ -182,6 +191,25 @@ S2-R2-C2: "" [empty] ← answer target
 S2-R5-C1: "Notes:" [merged: S2-R5-C1:S2-R6-C1]
 ```
 
+Example compact_text output (PDF):
+```
+=== PDF Form: 12 fields across 3 pages ===
+
+Page 1:
+[F1] "employee_name" (text) — empty
+    Context: Employee Information | Full Legal Name | First Middle Last
+[F2] "start_date" (text) — empty
+    Context: Employment Details | Start Date | MM/DD/YYYY
+[F3] "fulltime_cb" (checkbox) — unchecked
+    Context: Employment Type | Full Time | Part Time
+[F4] "dept_dd" (dropdown, options: HR | Engineering | Sales | Finance) — empty
+    Context: Department Assignment | Select Department
+
+Page 2:
+[F5] "signature" (text) — empty
+    Context: Authorization | Employee Signature | Date
+```
+
 ### `extract_structure(file_path | file_bytes_b64, file_type?) → document structure` *(alternative)*
 
 Returns the raw OOXML body (Word) or structured representation (Excel/PDF). Use this only when the calling agent has a large context window and needs to work directly with raw XML. Use on the form being filled — not on reference or knowledge documents.
@@ -190,7 +218,7 @@ For Word: returns the full `<w:body>` XML as a string (~134KB for a typical ques
 
 For Excel: returns a JSON representation of sheets, rows, columns, merged cells, and cell values.
 
-For PDF: returns a list of fillable field names, types, and current values.
+For PDF: returns a JSON list of all AcroForm fields with native field names, types, current values, page numbers, and options (for dropdowns/radio). Same data as compact but in structured form without the human-readable text or nearby context.
 
 ### `extract_text(file_bytes, file_type) → text content` *(optional utility)*
 
@@ -208,7 +236,7 @@ For Word with OOXML snippets: searches the document XML for each snippet. Return
 
 For Excel: confirms cell IDs (S1-R2-C3) exist in the workbook. Parses the ID to extract sheet index, row, and column. Checks that the sheet exists and the cell is within the worksheet's used dimensions. Returns the cell ID as the xpath and the cell's current value as context.
 
-For PDF: confirms field names exist in the form.
+For PDF: accepts field IDs (F1, F2, etc.) from compact extraction. Looks up the native field name from the `id_to_field` mapping. Confirms the field exists in the PDF. Returns the field's native name as context.
 
 Returns (Word example):
 ```json
@@ -234,6 +262,18 @@ Returns (Excel example):
 ]
 ```
 
+Returns (PDF example):
+```json
+[
+  {
+    "pair_id": "q1",
+    "status": "matched",
+    "xpath": "F1",
+    "context": "employee_name (text)"
+  }
+]
+```
+
 ### `build_insertion_xml(answer_text, target_context_xml, answer_type) → insertion_xml`
 
 For `answer_type: "plain_text"` (the common case):
@@ -249,7 +289,7 @@ For `answer_type: "structured"`:
 
 For Excel: not needed — openpyxl writes cell values directly.
 
-For PDF: not needed — PyPDFForm fills fields by name.
+For PDF: not needed — PyMuPDF writes field values directly via widget API.
 
 ### `write_answers(file_path | file_bytes_b64, file_type?, answers[]?, answers_file_path?, output_file_path?) → filled_file_bytes`
 
@@ -274,6 +314,22 @@ Each answer (Excel — simpler, no insertion XML needed):
 ```
 
 For Excel, `insertion_xml` holds the plain text cell value (not XML). Only `replace_content` mode is supported — it writes the value directly to the cell using openpyxl.
+
+Each answer (PDF — simplest, field ID + value):
+```json
+{
+  "pair_id": "q1",
+  "xpath": "F1",
+  "insertion_xml": "John Smith",
+  "mode": "replace_content"
+}
+```
+
+For PDF, `xpath` holds the field ID (F1, F2, etc.), `insertion_xml` holds the plain text value. The server looks up the native field name from the `id_to_field` mapping, then sets the value via PyMuPDF's widget API. Type-specific logic:
+- **Text fields**: `widget.field_value = str(value)`
+- **Checkboxes**: coerce "true"/"yes"/"1"/"checked" to bool
+- **Dropdowns**: validate value is in the options list, then set
+- **Radio buttons**: set `widget.field_value = str(value)`
 
 **`answers_file_path`** *(recommended for large payloads)* — path to a JSON file containing the answers array. The agent writes its answers to a JSON file on disk and passes the path instead of inlining 50+ answer objects as tool parameters. This avoids overwhelming the agent's context window during generation. JSON schema: `[{"pair_id": "q1", "xpath": "S1-R2-C3", "insertion_xml": "answer text", "mode": "replace_content"}, ...]`. The inline `answers` parameter remains as a fallback for small payloads.
 
@@ -306,9 +362,13 @@ Each expected_answer is:
 - No structural validation needed (openpyxl guarantees valid .xlsx output)
 - Returns empty structural_issues list
 
+**Structural validation** (PDF):
+- No structural validation needed (PyMuPDF handles PDF integrity)
+- Returns empty structural_issues list
+
 **Content verification:**
-- For each expected_answer, locates the element at the XPath (Word) or cell ID (Excel)
-- Extracts text content and compares against expected_text (substring match)
+- For each expected_answer, locates the element at the XPath (Word), cell ID (Excel), or field ID (PDF)
+- Extracts text content and compares against expected_text (case-insensitive substring match)
 
 The optional **`confidence`** field (`"known"`, `"uncertain"`, `"unknown"`, default `"known"`) is carried through for reporting. The summary includes confidence counts so the user knows how many answers need manual review.
 
@@ -329,7 +389,7 @@ Returns:
 
 ### `list_form_fields(file_path | file_bytes_b64, file_type?) → fields[]`
 
-A simpler utility. Returns a plain inventory of all fillable targets found by code (not AI). For Word: empty table cells following a cell with text, paragraphs containing common placeholders. For Excel: empty cells adjacent to cells with question-like text. For PDF: named form fields.
+A simpler utility. Returns a plain inventory of all fillable targets found by code (not AI). For Word: empty table cells following a cell with text, paragraphs containing common placeholders. For Excel: empty cells adjacent to cells with question-like text. For PDF: all native AcroForm fields with their types and current values (no nearby text extraction).
 
 ## Project Structure
 
@@ -354,7 +414,11 @@ vibe-legal-form-filler/
 │   │   │                      #   detects formatting/merged cells, builds id_to_xpath map
 │   │   ├── excel_writer.py    # Answer insertion: writes cell values using openpyxl
 │   │   ├── excel_verifier.py  # Post-write verification: reads cells and compares to expected
-│   │   ├── pdf.py             # PDF handler: extract, validate, write
+│   │   ├── pdf.py             # PDF handler: thin entry point, delegates to sub-modules
+│   │   ├── pdf_indexer.py     # Compact extraction: walks AcroForm widgets, assigns F-IDs,
+│   │   │                      #   extracts nearby text context, maps field types
+│   │   ├── pdf_writer.py      # Answer insertion: sets widget values via PyMuPDF
+│   │   ├── pdf_verifier.py    # Post-write verification: reads widget values and compares
 │   │   └── text_extractor.py  # Optional: extract plain text from any supported format
 │   ├── xml_utils.py           # OOXML snippet matching, XPath resolution,
 │   │                          #   formatting inheritance, well-formedness checks
@@ -369,7 +433,9 @@ vibe-legal-form-filler/
 │       ├── table_questionnaire.docx
 │       ├── placeholder_form.docx
 │       ├── vendor_assessment.xlsx
-│       └── fillable_application.pdf
+│       ├── simple_form.pdf         # text fields, checkbox, dropdown
+│       ├── multi_page_form.pdf     # fields across 3 pages
+│       └── prefilled_form.pdf      # some fields already have values
 └── docs/
     └── ARCHITECTURE.md
 ```
@@ -401,15 +467,34 @@ Simpler than Word — no OOXML snippet matching needed, no insertion XML buildin
 
 Key library: `openpyxl`. No `build_insertion_xml` — openpyxl writes cell values directly.
 
-### Phase 3: PDF (fillable forms only)
-Simplest format — named fields with known types.
+### Phase 3: PDF (fillable AcroForm only)
+Simplest format — PyMuPDF handles the heavy lifting. No OOXML manipulation, no insertion XML building. Uses `page.widgets()` to iterate native form widgets.
 
-1. `extract_structure` — return list of field names, types, current values
-2. `validate_locations` — confirm field names exist
-3. `write_answers` — fill fields by name
-4. `list_form_fields` — same as extract_structure for PDF
+1. `extract_structure_compact` — walk all pages, iterate widgets, assign sequential F-IDs, extract nearby text (expand widget bounding box by ~100px, grab surrounding text for context), detect field types (text, checkbox, dropdown, radio, listbox), report current values and options
+2. `extract_structure` — return full field list as JSON (same data as compact, structured form)
+3. `validate_locations` — confirm field IDs exist in the F-ID mapping
+4. `write_answers` — set widget values via PyMuPDF (text: set string, checkbox: coerce to bool, dropdown: validate against options, radio: set string), call `widget.update()` after each edit
+5. `verify_output` — re-open filled PDF, read widget values, compare to expected (case-insensitive substring match)
+6. `list_form_fields` — all AcroForm fields with types and current values (no nearby text)
 
-Key library: `PyPDFForm` or `PyMuPDF`.
+Key library: `PyMuPDF` (fitz). No `build_insertion_xml` — PyMuPDF writes values directly via widget API. No `pypdfform` needed.
+
+**Key design decisions (learned from Jerry Liu's `form_filling_app`):**
+- **Sequential F-IDs instead of page+name composites** — avoids breakage with duplicate or empty field names
+- **Nearby text extraction** — expand widget bounding box by ~100px, clip to page bounds, grab text with `page.get_text("text", clip=expanded_rect)` for AI context
+- **No LLM calls** — return raw field names + nearby text + types; let the agent decide labels
+- **Include field options** — for dropdowns/radio, show available options so the agent picks valid values
+- **Include current values** — so the agent knows what to skip or overwrite
+- **Graceful non-AcroForm handling** — if no widgets found, return clear message: "No fillable form fields found. This PDF may be a flat/scanned document."
+
+**Edge cases to handle:**
+1. Duplicate field names (same name on different pages) — F-IDs disambiguate
+2. Read-only fields — report in compact output but skip during write
+3. Very long field values — text overflow (set value, let PDF renderer handle display)
+4. Non-AcroForm PDF (flat/scanned) — return empty field list with clear message
+5. PDF with only checkboxes (no text fields)
+6. Dropdown with value not in options list — return error for that specific field
+7. Checkbox value coercion — convert "true"/"yes"/"1"/"checked" (case-insensitive) to bool
 
 ## Conventions
 
@@ -418,7 +503,7 @@ Key library: `PyPDFForm` or `PyMuPDF`.
 - Pydantic for all data models (input/output of every tool)
 - pytest for tests with fixtures
 - lxml for all XML manipulation (not ElementTree)
-- Each handler module exposes: extract_structure_compact(), extract_structure(), validate_locations(), build_insertion_xml() (Word only), write_answers(), list_form_fields()
+- Each handler module exposes: extract_structure_compact(), extract_structure(), validate_locations(), build_insertion_xml() (Word only), write_answers(), verify_output(), list_form_fields()
 - No LLM calls inside this server — ever
 - Stateless — no persistent storage between calls
 - All file I/O is bytes in, bytes out (or file_path in, file_path out)
@@ -515,7 +600,9 @@ Recommended practices for copilot agents using these MCP tools:
 - Word fixture 2: paragraph form with placeholder text like "[Enter here]" and "___"
 - Word fixture 3: mixed layout (tables + paragraphs + headers)
 - Excel fixture: vendor assessment with header row and Q/A columns
-- PDF fixture: fillable form with text fields, checkboxes, dropdowns
+- PDF fixture 1: simple form with text fields, checkbox, dropdown
+- PDF fixture 2: multi-page form with fields across 3 pages
+- PDF fixture 3: pre-filled form with some fields already populated
 - Test each handler function independently
 - Test the full pipeline: extract → validate → build → write → verify
 - Validate that written documents open correctly in Word/Excel/Acrobat
@@ -528,7 +615,6 @@ mcp
 lxml
 python-docx
 openpyxl
-pypdfform
 pymupdf
 pydantic
 pytest
