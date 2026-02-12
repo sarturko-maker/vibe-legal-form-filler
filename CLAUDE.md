@@ -12,30 +12,53 @@ Starts with Word (.docx), then Excel (.xlsx), then PDF (fillable forms).
 
 ## Core Design Principle
 
-AI is good at reading OOXML and understanding what it means. AI is bad at writing large amounts of correct OOXML from scratch. So we split the work:
+AI is bad at writing large amounts of correct OOXML from scratch. The server does the heavy XML parsing and gives the agent a compact, human-readable representation with stable element IDs. The agent works with IDs and plain text — never raw OOXML. So we split the work:
 
-- **AI reads** the full OOXML and identifies question/answer pairs
-- **AI returns** each answer location as a small OOXML snippet (a locator)
-- **Code validates** that each snippet actually exists in the document
+- **Code parses** the OOXML and returns a compact indexed representation with element IDs
+- **AI reads** the compact representation and identifies question/answer pairs by ID
+- **Code validates** that each element ID maps to a real location in the document
 - **AI answers** the questions using the agent's institutional knowledge and user instructions (plain text only, no OOXML)
 - **Code builds** the insertion OOXML (for plain text answers) or **AI builds** a small OOXML snippet (for structured answers like checkboxes)
 - **Code validates** any AI-generated insertion XML is well-formed
 - **Code writes** the answer into the document at the located position
 
-The MCP server owns steps: validate locations, build plain insertion XML, validate insertion XML, and write. The calling agent owns: identify pairs, generate answers (using its own knowledge + user instructions), and optionally build structured insertion XML.
+The MCP server owns steps: parse structure, validate locations, build plain insertion XML, validate insertion XML, and write. The calling agent owns: identify pairs by ID, generate answers (using its own knowledge + user instructions), and optionally build structured insertion XML.
+
+### Why Compact Extraction
+
+MCP tool responses go directly into the calling agent's conversation context. A typical Word questionnaire produces ~134KB of raw OOXML — far too large for a conversation turn. The `extract_structure_compact` tool solves this by doing the heavy XML parsing server-side and returning a compact representation (a few KB) with stable element IDs. The agent never needs to see or produce raw OOXML. The raw `extract_structure` tool remains available for specialized agents with large context windows.
+
+## File Input
+
+Every tool that takes a document accepts two input modes:
+
+- **`file_path`** *(preferred for interactive agents)* — an absolute or relative path to the file on disk. The server reads the bytes and infers `file_type` from the extension (`.docx`→word, `.xlsx`→excel, `.pdf`→pdf).
+- **`file_bytes_b64`** *(for programmatic use)* — base64-encoded file bytes. Requires `file_type` to be provided explicitly.
+
+Provide one or the other. If both are provided, `file_path` takes precedence. If `file_path` is used, `file_type` is optional (inferred from extension) but can be provided to override.
+
+The `write_answers` tool also accepts an optional **`output_file_path`** — when provided, the server writes the filled document to that path on disk instead of returning base64-encoded bytes.
 
 ## The Pipeline
 
 ```
 STEP 1: EXTRACT STRUCTURE (MCP tool — deterministic)
-  Input:  form document bytes, file type
-  Output: full OOXML body as text (for Word), or structured representation
-  Note:   the calling agent sends this to AI for pair identification
+  Default:  extract_structure_compact (recommended for most agents)
+    Input:  form document bytes, file type
+    Output: JSON with compact_text (indexed human-readable representation),
+            id_to_xpath (ID → XPath mapping), complex_elements (IDs needing raw XML)
+    Note:   response is a few KB, not 134KB — safe for conversation context
+
+  Alternative: extract_structure (for agents with large context windows)
+    Input:  form document bytes, file type
+    Output: full OOXML body as text (for Word), or structured representation
+    Note:   returns raw XML; agent must work with OOXML snippets instead of IDs
 
 STEP 2: VALIDATE LOCATIONS (MCP tool — deterministic)
-  Input:  document bytes, array of OOXML location snippets from AI
-  Output: validated array with match status and XPath for each snippet
-  Action: confirms each snippet exists in the document body
+  Input:  document bytes, array of element IDs (from compact) or OOXML snippets (from raw)
+  Output: validated array with match status and XPath for each location
+  Action: for IDs — looks up XPath from the id_to_xpath mapping
+          for snippets — searches document XML for the snippet
           returns the XPath or element reference for each match
 
 STEP 3: BUILD INSERTION XML (MCP tool — deterministic)
@@ -66,23 +89,60 @@ The agent combines all three sources when generating answers. The MCP server onl
 ### How the Calling Agent Orchestrates This
 
 ```
-1. User drops in: form document + optional instructions
-2. Agent calls extract_structure → gets form structure
-3. Agent sends form structure to AI → gets question/location pairs
+1. User drops in: form document path + optional instructions
+2. Agent calls extract_structure_compact(file_path="form.docx")
+   → gets compact indexed representation (no base64 encoding needed)
+3. Agent reads compact_text → identifies question/answer pairs by element ID
    (AI uses agent's institutional knowledge to understand context)
-4. Agent calls validate_locations → confirms locations are real
+4. Agent calls validate_locations(file_path="form.docx", ...) → confirms IDs are real
 5. Agent generates answers using: institutional knowledge + user instructions
 6. Agent calls build_insertion_xml for each answer → gets OOXML to insert
-7. Agent calls write_answers → gets completed document
+7. Agent calls write_answers(file_path="form.docx", output_file_path="filled.docx", ...)
+   → filled document written to disk
 ```
 
 ## MCP Tools
 
-### `extract_structure(file_bytes, file_type) → document structure`
+### `extract_structure_compact(file_path | file_bytes_b64, file_type?) → compact representation` *(primary)*
 
-Returns the raw OOXML body (Word) or structured representation (Excel/PDF) so the calling agent can send it to AI for pair identification.
+The default first step in the pipeline. Walks the document body and returns a compact, human-readable indexed representation instead of raw XML. Designed to fit comfortably in an agent's conversation context (a few KB, not 134KB).
 
-For Word: returns the full `<w:body>` XML as a string. The calling agent sends this to AI with a prompt like "identify question/answer pairs and return each answer location as an OOXML snippet."
+For Word, the response contains:
+- **`compact_text`** — indexed representation with stable element IDs and text content
+- **`id_to_xpath`** — mapping from every element ID to its XPath in the document
+- **`complex_elements`** — list of IDs flagged as containing complex OOXML
+
+**Element ID scheme:**
+- `T1-R2-C1` — table 1, row 2, cell 1
+- `P5` — paragraph 5 (top-level, outside any table)
+
+**For simple elements:** outputs ID, text content, and formatting hints (bold, italic, shading, font size).
+
+**For complex elements** (nested tables, content controls `w:sdt`, legacy form fields `w:fldChar`, merged cells `gridSpan`/`vMerge`, text boxes, embedded objects): outputs ID, a `COMPLEX` warning with the type, and the raw XML snippet for just that element.
+
+**Empty cells and placeholders** (e.g. "[Enter here]", "___") are marked as potential answer targets.
+
+Example compact_text output:
+```
+T1-R1-C1: "Company Name" [bold]
+T1-R1-C2: "" [empty, shaded] ← answer target
+T1-R2-C1: "Date of Incorporation"
+T1-R2-C2: "" [empty, shaded] ← answer target
+P3: "Please describe your data security policies:" [bold]
+P4: "[Enter here]" [placeholder] ← answer target
+T2-R1-C1: "Coverage Type" [bold]
+T2-R1-C2: "Limit" [bold]
+T2-R1-C3: "Deductible" [bold]
+T2-R2-C1: "General Liability"
+T2-R2-C2: "" [empty] ← answer target
+T2-R2-C3: COMPLEX(gridSpan=2): <w:tc>...</w:tc>
+```
+
+### `extract_structure(file_path | file_bytes_b64, file_type?) → document structure` *(alternative)*
+
+Returns the raw OOXML body (Word) or structured representation (Excel/PDF). Use this only when the calling agent has a large context window and needs to work directly with raw XML.
+
+For Word: returns the full `<w:body>` XML as a string (~134KB for a typical questionnaire). The calling agent sends this to AI with a prompt like "identify question/answer pairs and return each answer location as an OOXML snippet."
 
 For Excel: returns a JSON representation of sheets, rows, columns, merged cells, and cell values.
 
@@ -94,11 +154,13 @@ A convenience tool for when the agent needs to read an attached document that is
 
 This is not part of the core pipeline. Most copilot agents can read files natively. This tool exists for agents that cannot, or for non-trivial formats where python-docx/openpyxl/PyMuPDF would do a better job than the agent's built-in file reader.
 
-### `validate_locations(file_bytes, file_type, locations[]) → validated_locations[]`
+### `validate_locations(file_path | file_bytes_b64, file_type?, locations[]) → validated_locations[]`
 
-Each location is an OOXML snippet (Word), cell reference (Excel), or field name (PDF).
+Each location is an element ID like `T1-R2-C2` (from compact extraction), an OOXML snippet (from raw extraction), a cell reference (Excel), or a field name (PDF).
 
-For Word: searches the document XML for each snippet. Returns match/no-match and the XPath to the matched element. Handles minor whitespace differences. Flags ambiguous matches (snippet appears more than once).
+For Word with element IDs: looks up the XPath from the `id_to_xpath` mapping returned by `extract_structure_compact`. Returns match/no-match and the XPath. This is the fast path — no snippet searching needed.
+
+For Word with OOXML snippets: searches the document XML for each snippet. Returns match/no-match and the XPath to the matched element. Handles minor whitespace differences. Flags ambiguous matches (snippet appears more than once).
 
 For Excel: confirms cell references exist and are within sheet bounds.
 
@@ -133,7 +195,7 @@ For Excel: not needed — openpyxl writes cell values directly.
 
 For PDF: not needed — PyPDFForm fills fields by name.
 
-### `write_answers(file_bytes, file_type, answers[]) → filled_file_bytes`
+### `write_answers(file_path | file_bytes_b64, file_type?, answers[], output_file_path?) → filled_file_bytes`
 
 Each answer is:
 ```json
@@ -150,9 +212,9 @@ Modes:
 - `append` — adds after existing content
 - `replace_placeholder` — finds placeholder text (e.g. "[Enter here]") within the target and replaces only that
 
-Returns the complete document as bytes with all answers inserted.
+Returns the complete document as bytes with all answers inserted. When `output_file_path` is provided, writes the result to disk and returns the path instead of base64 bytes.
 
-### `list_form_fields(file_bytes, file_type) → fields[]`
+### `list_form_fields(file_path | file_bytes_b64, file_type?) → fields[]`
 
 A simpler utility. Returns a plain inventory of all fillable targets found by code (not AI). For Word: empty table cells following a cell with text, paragraphs containing common placeholders. For Excel: empty cells adjacent to cells with question-like text. For PDF: named form fields.
 
@@ -170,6 +232,8 @@ vibe-legal-form-filler/
 │   ├── handlers/
 │   │   ├── __init__.py
 │   │   ├── word.py            # Word handler: extract, validate, build XML, write
+│   │   ├── word_indexer.py    # Compact extraction: walks OOXML body, assigns element IDs,
+│   │   │                      #   detects formatting/complex elements, builds id_to_xpath map
 │   │   ├── excel.py           # Excel handler: extract, validate, write
 │   │   ├── pdf.py             # PDF handler: extract, validate, write
 │   │   └── text_extractor.py  # Optional: extract plain text from any supported format
@@ -195,11 +259,12 @@ vibe-legal-form-filler/
 ### Phase 1: Word (.docx)
 This is the hardest format and the most valuable. Focus here first.
 
-1. `extract_structure` — read .docx, return full `<w:body>` XML
-2. `validate_locations` — OOXML snippet matching against document body
-3. `build_insertion_xml` — formatting inheritance and XML templating
-4. `write_answers` — XPath-based insertion with replace/append/placeholder modes
-5. `list_form_fields` — heuristic detection of empty answer cells/placeholders
+1. `extract_structure_compact` — walk .docx body, assign element IDs, return compact indexed representation with id_to_xpath mapping
+2. `extract_structure` — read .docx, return full `<w:body>` XML (alternative for large-context agents)
+3. `validate_locations` — accept element IDs (fast XPath lookup) or OOXML snippets (snippet matching against document body)
+4. `build_insertion_xml` — formatting inheritance and XML templating
+5. `write_answers` — XPath-based insertion with replace/append/placeholder modes
+6. `list_form_fields` — heuristic detection of empty answer cells/placeholders
 
 Key library: `lxml` for XML parsing and XPath. `python-docx` for high-level read/write when appropriate, but `lxml` directly for the OOXML manipulation.
 
@@ -230,10 +295,10 @@ Key library: `PyPDFForm` or `PyMuPDF`.
 - Pydantic for all data models (input/output of every tool)
 - pytest for tests with fixtures
 - lxml for all XML manipulation (not ElementTree)
-- Each handler module exposes: extract_structure(), validate_locations(), build_insertion_xml() (Word only), write_answers(), list_form_fields()
+- Each handler module exposes: extract_structure_compact(), extract_structure(), validate_locations(), build_insertion_xml() (Word only), write_answers(), list_form_fields()
 - No LLM calls inside this server — ever
 - Stateless — no persistent storage between calls
-- All file I/O is bytes in, bytes out
+- All file I/O is bytes in, bytes out (or file_path in, file_path out)
 
 ## Vibe Coding Maintenance Principles
 
