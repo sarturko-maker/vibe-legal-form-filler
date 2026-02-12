@@ -2,6 +2,10 @@
 
 MCP server for AI-powered form filling across Word, Excel, and PDF documents.
 
+## Vibe Coded
+
+This project was built entirely through "vibe coding" — an AI-assisted development approach where a non-programmer (a commercial lawyer) designed the architecture and directed implementation using AI tools. No line of code was written manually. The author is not a software engineer and makes no representations about code quality beyond the automated tests included in the repository.
+
 ## What It Does
 
 Vibe Legal Form Filler provides deterministic document manipulation tools — extract structure, validate locations, write answers, and verify output — that any AI agent can orchestrate via the [MCP protocol](https://modelcontextprotocol.io/).
@@ -88,3 +92,7 @@ This project is licensed under the [GNU Affero General Public License v3.0](LICE
 Any modifications or derivative works must be shared under the same license. If you run a modified version of this server as a network service, you must make the source code available to users of that service.
 
 Dual licensing available on request — see [NOTICE](NOTICE).
+
+## Disclaimer
+
+This software is provided as-is, without warranty of any kind. It is an experimental tool built through AI-assisted development. Users should independently verify all outputs before relying on them for any purpose. The author accepts no liability for errors, omissions, or any consequences arising from use of this software. This disclaimer applies in addition to the terms of the AGPL-3.0 license.
