@@ -33,10 +33,9 @@ from src.models import (
     ContentStatus,
     ExpectedAnswer,
     VerificationReport,
-    VerificationSummary,
 )
-from src.validators import count_confidence
-from src.xml_utils import NAMESPACES
+from src.validators import build_verification_summary
+from src.xml_utils import NAMESPACES, SECURE_PARSER
 
 WORD_NAMESPACE_URI = NAMESPACES["w"]
 
@@ -129,29 +128,15 @@ def verify_output(
     and a summary with counts.
     """
     doc_xml = _read_document_xml(file_bytes)
-    root = etree.fromstring(doc_xml)
+    root = etree.fromstring(doc_xml, SECURE_PARSER)
     body = root.find("w:body", NAMESPACES)
     if body is None:
         raise ValueError("No <w:body> element found in document.xml")
 
     structural_issues = _check_structural_issues(body)
     content_results = _verify_content(body, expected_answers)
-
-    matched = sum(1 for r in content_results if r.status == ContentStatus.MATCHED)
-    mismatched = sum(
-        1 for r in content_results if r.status == ContentStatus.MISMATCHED
-    )
-    missing = sum(1 for r in content_results if r.status == ContentStatus.MISSING)
-
-    conf_counts = count_confidence(expected_answers)
-
-    summary = VerificationSummary(
-        total=len(expected_answers),
-        matched=matched,
-        mismatched=mismatched,
-        missing=missing,
-        structural_issues=len(structural_issues),
-        **conf_counts,
+    summary = build_verification_summary(
+        content_results, expected_answers, len(structural_issues)
     )
 
     return VerificationReport(

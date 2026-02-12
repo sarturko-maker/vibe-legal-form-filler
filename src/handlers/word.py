@@ -42,6 +42,7 @@ from src.models import (
 )
 from src.xml_utils import (
     NAMESPACES,
+    SECURE_PARSER,
     build_run_xml,
     extract_formatting,
     find_snippet_in_body,
@@ -69,7 +70,7 @@ def _read_document_xml(file_bytes: bytes) -> bytes:
 def _get_body_xml(file_bytes: bytes) -> str:
     """Extract the <w:body> XML string from a .docx file."""
     doc_xml = _read_document_xml(file_bytes)
-    root = etree.fromstring(doc_xml)
+    root = etree.fromstring(doc_xml, SECURE_PARSER)
     body = root.find("w:body", NAMESPACES)
     if body is None:
         raise ValueError("No <w:body> element found in document.xml")

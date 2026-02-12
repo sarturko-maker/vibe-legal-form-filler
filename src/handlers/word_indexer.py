@@ -34,7 +34,7 @@ from io import BytesIO
 from lxml import etree
 
 from src.models import CompactStructureResponse
-from src.xml_utils import NAMESPACES
+from src.xml_utils import NAMESPACES, SECURE_PARSER
 
 W = NAMESPACES["w"]
 
@@ -89,7 +89,7 @@ def _parse_body(file_bytes: bytes) -> etree._Element:
     """Extract and parse <w:body> from a .docx file."""
     with zipfile.ZipFile(BytesIO(file_bytes)) as zf:
         doc_xml = zf.read("word/document.xml")
-    root = etree.fromstring(doc_xml)
+    root = etree.fromstring(doc_xml, SECURE_PARSER)
     body = root.find("w:body", NAMESPACES)
     if body is None:
         raise ValueError("No <w:body> element found in document.xml")

@@ -23,7 +23,6 @@ excel_verifier for output verification. Uses openpyxl for all operations.
 
 from __future__ import annotations
 
-import re
 from io import BytesIO
 
 import openpyxl
@@ -44,8 +43,6 @@ from src.models import (
     LocationStatus,
     ValidatedLocation,
 )
-
-CELL_ID_RE = re.compile(r"^S(\d+)-R(\d+)-C(\d+)$")
 
 
 def extract_structure(file_bytes: bytes) -> ExtractStructureResponse:

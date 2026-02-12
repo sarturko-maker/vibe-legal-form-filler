@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from lxml import etree
 
-from src.xml_snippet_matching import NAMESPACES
+from src.xml_snippet_matching import NAMESPACES, SECURE_PARSER
 
 
 def _find_run_properties(elem: etree._Element) -> etree._Element | None:
@@ -116,14 +116,14 @@ def _extract_color_properties(rpr: etree._Element) -> dict:
 def _parse_element_xml(element_xml: str) -> etree._Element:
     """Parse an OOXML element string, adding namespace wrappers if needed."""
     try:
-        return etree.fromstring(element_xml.encode("utf-8"))
+        return etree.fromstring(element_xml.encode("utf-8"), SECURE_PARSER)
     except etree.XMLSyntaxError:
         wrapper = (
             f'<_wrapper xmlns:w="{NAMESPACES["w"]}" '
             f'xmlns:r="{NAMESPACES["r"]}">'
             f"{element_xml}</_wrapper>"
         )
-        return etree.fromstring(wrapper.encode("utf-8"))[0]
+        return etree.fromstring(wrapper.encode("utf-8"), SECURE_PARSER)[0]
 
 
 def extract_formatting(element_xml: str) -> dict:

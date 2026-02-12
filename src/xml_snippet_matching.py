@@ -32,6 +32,14 @@ NAMESPACES = {
     "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
 }
 
+# Secure XML parser — disables external entities and network access (XXE prevention)
+SECURE_PARSER = etree.XMLParser(
+    resolve_entities=False,
+    no_network=True,
+    dtd_validation=False,
+    load_dtd=False,
+)
+
 # Reverse mapping: full URI -> prefix
 _URI_TO_PREFIX = {v: k for k, v in NAMESPACES.items()}
 
@@ -44,7 +52,7 @@ def parse_snippet(snippet: str) -> etree._Element | None:
     returns the first child. Returns None if the snippet is not valid XML.
     """
     try:
-        return etree.fromstring(snippet.encode("utf-8"))
+        return etree.fromstring(snippet.encode("utf-8"), SECURE_PARSER)
     except etree.XMLSyntaxError:
         wrapper = (
             f'<_wrapper xmlns:w="{NAMESPACES["w"]}" '
@@ -53,7 +61,7 @@ def parse_snippet(snippet: str) -> etree._Element | None:
             f"{snippet}</_wrapper>"
         )
         try:
-            wrapper_elem = etree.fromstring(wrapper.encode("utf-8"))
+            wrapper_elem = etree.fromstring(wrapper.encode("utf-8"), SECURE_PARSER)
             return wrapper_elem[0]
         except etree.XMLSyntaxError:
             return None
@@ -138,7 +146,7 @@ def find_snippet_in_body(body_xml: str, snippet: str) -> list[str]:
     Returns a list of XPath strings. Empty list means no match, more than one
     means ambiguous.
     """
-    body_root = etree.fromstring(body_xml.encode("utf-8"))
+    body_root = etree.fromstring(body_xml.encode("utf-8"), SECURE_PARSER)
 
     snippet_elem = parse_snippet(snippet)
     if snippet_elem is None:

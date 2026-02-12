@@ -30,9 +30,14 @@ from io import BytesIO
 from lxml import etree
 
 from src.models import AnswerPayload, InsertionMode
-from src.xml_utils import NAMESPACES, parse_snippet
+from src.xml_utils import NAMESPACES, SECURE_PARSER, parse_snippet
 
 WORD_NAMESPACE_URI = NAMESPACES["w"]
+
+# Allowed XPath pattern: positional steps using OOXML element names only
+_XPATH_SAFE_RE = __import__("re").compile(
+    r"^\.(/w:(body|tbl|tr|tc|p|r|sdt|sdtContent)(\[\d+\])?)+$"
+)
 
 
 def _replace_content(target: etree._Element, insertion_xml: str) -> None:
@@ -125,8 +130,19 @@ def _repackage_docx_zip(file_bytes: bytes, modified_xml: bytes) -> bytes:
     return output.getvalue()
 
 
+def _validate_xpath(xpath: str) -> None:
+    """Reject XPath expressions that don't match the expected pattern.
+
+    Only allows positional steps using known OOXML element names.
+    Prevents XPath injection via function calls or complex predicates.
+    """
+    if not _XPATH_SAFE_RE.match(xpath):
+        raise ValueError(f"XPath does not match expected pattern: {xpath!r}")
+
+
 def _apply_answer(body: etree._Element, answer: AnswerPayload) -> None:
     """Locate a single answer's target by XPath and insert its content."""
+    _validate_xpath(answer.xpath)
     matched = body.xpath(answer.xpath, namespaces=NAMESPACES)
     if not matched:
         raise ValueError(
@@ -152,7 +168,7 @@ def write_answers(
     file_bytes: the original .docx file bytes (for repackaging).
     answers: list of answer payloads with XPaths and insertion XML.
     """
-    root = etree.fromstring(doc_xml)
+    root = etree.fromstring(doc_xml, SECURE_PARSER)
     body = root.find("w:body", NAMESPACES)
     if body is None:
         raise ValueError("No <w:body> element found in document.xml")

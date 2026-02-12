@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from lxml import etree
 
-from src.xml_snippet_matching import NAMESPACES
+from src.xml_snippet_matching import NAMESPACES, SECURE_PARSER
 
 # Reverse mapping for namespace validation
 _URI_TO_PREFIX = {v: k for k, v in NAMESPACES.items()}
@@ -67,7 +67,7 @@ def is_well_formed_ooxml(xml_string: str) -> tuple[bool, str | None]:
         f"{xml_string}</_wrapper>"
     )
     try:
-        root = etree.fromstring(wrapped.encode("utf-8"))
+        root = etree.fromstring(wrapped.encode("utf-8"), SECURE_PARSER)
     except etree.XMLSyntaxError as e:
         return False, f"XML syntax error: {e}"
 

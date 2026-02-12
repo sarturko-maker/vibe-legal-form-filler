@@ -23,6 +23,7 @@ This module re-exports all public symbols so that existing imports like
 
 from src.xml_snippet_matching import (  # noqa: F401
     NAMESPACES,
+    SECURE_PARSER,
     find_snippet_in_body,
     parse_snippet,
 )

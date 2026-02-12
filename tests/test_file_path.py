@@ -41,12 +41,12 @@ class TestResolveFromPath:
     def test_unknown_extension_raises(self, tmp_path: Path) -> None:
         fake = tmp_path / "data.xyz"
         fake.write_bytes(b"PK fake content")
-        with pytest.raises(ValueError, match="Cannot infer file_type"):
+        with pytest.raises(ValueError, match="Unsupported file extension"):
             resolve_file_input(None, None, str(fake))
 
     def test_missing_file_raises(self) -> None:
         with pytest.raises(ValueError, match="File not found"):
-            resolve_file_input(None, None, "/nonexistent/path.docx")
+            resolve_file_input(None, None, "/tmp/nonexistent/path.docx")
 
     def test_empty_file_raises(self, tmp_path: Path) -> None:
         empty = tmp_path / "empty.docx"

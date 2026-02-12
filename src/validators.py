@@ -16,8 +16,9 @@
 
 """Shared validation logic used across handlers.
 
-Provides file_type validation, magic-byte checks, and the resolve_file_input()
-helper that lets MCP tools accept either a file_path or base64-encoded bytes.
+Provides file_type validation, magic-byte checks, path safety, file size limits,
+verification summary building, and the resolve_file_input() helper that lets
+MCP tools accept either a file_path or base64-encoded bytes.
 """
 
 from __future__ import annotations
@@ -25,7 +26,22 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from src.models import FileType
+from src.models import (
+    ContentResult,
+    ContentStatus,
+    ExpectedAnswer,
+    FileType,
+    VerificationSummary,
+)
+
+# Maximum file size in bytes (50 MB) — reject before reading into memory
+MAX_FILE_SIZE = 50 * 1024 * 1024
+
+# Maximum base64 string length (~67 MB encoded ≈ 50 MB decoded)
+MAX_BASE64_LENGTH = 67 * 1024 * 1024
+
+# Maximum number of answers in a single write_answers or verify_output call
+MAX_ANSWERS = 10_000
 
 # Magic bytes for supported file types
 _MAGIC_BYTES = {
@@ -62,9 +78,28 @@ def validate_file_bytes(file_bytes: bytes, file_type: FileType) -> None:
     magic = _MAGIC_BYTES.get(file_type)
     if magic and not file_bytes[:len(magic)].startswith(magic):
         raise ValueError(
-            f"file_bytes does not appear to be a valid {file_type.value} file "
-            f"(expected magic bytes {magic!r}, got {file_bytes[:8]!r})"
+            f"file_bytes does not appear to be a valid {file_type.value} file"
         )
+
+
+def validate_path_safe(file_path: str) -> Path:
+    """Resolve a user-supplied path and check for traversal attacks.
+
+    Rejects null bytes and ensures the resolved path is a real filesystem
+    location (not /dev/*, /proc/*, /sys/*).  Returns the resolved Path.
+    """
+    if "\x00" in file_path:
+        raise ValueError("Invalid file path")
+
+    resolved = Path(file_path).resolve()
+
+    # Block virtual filesystem paths that could cause hangs or info leaks
+    blocked_prefixes = ("/dev/", "/proc/", "/sys/")
+    resolved_str = str(resolved)
+    if any(resolved_str.startswith(p) for p in blocked_prefixes):
+        raise ValueError("Access to system paths is not allowed")
+
+    return resolved
 
 
 def resolve_file_input(
@@ -96,9 +131,14 @@ def resolve_file_input(
 
 def _resolve_from_path(file_path: str, file_type: str | None) -> tuple[bytes, FileType]:
     """Read bytes from disk and infer or validate file_type."""
-    path = Path(file_path)
+    path = validate_path_safe(file_path)
     if not path.is_file():
-        raise ValueError(f"File not found: {file_path}")
+        raise ValueError("File not found or not accessible")
+
+    if path.stat().st_size > MAX_FILE_SIZE:
+        raise ValueError(
+            f"File exceeds maximum size ({MAX_FILE_SIZE // (1024 * 1024)} MB)"
+        )
 
     raw = path.read_bytes()
 
@@ -110,8 +150,8 @@ def _resolve_from_path(file_path: str, file_type: str | None) -> tuple[bytes, Fi
         if ft is None:
             supported = ", ".join(_EXTENSION_TO_FILE_TYPE.keys())
             raise ValueError(
-                f"Cannot infer file_type from extension '{ext}'. "
-                f"Supported: {supported}. Pass file_type explicitly."
+                f"Unsupported file extension. Supported: {supported}. "
+                f"Pass file_type explicitly."
             )
 
     validate_file_bytes(raw, ft)
@@ -150,6 +190,34 @@ def count_confidence(expected_answers: list) -> dict:
     }
 
 
+def build_verification_summary(
+    content_results: list[ContentResult],
+    expected_answers: list[ExpectedAnswer],
+    structural_issues_count: int = 0,
+) -> VerificationSummary:
+    """Build a VerificationSummary from content results and expected answers.
+
+    Counts matched/mismatched/missing statuses and confidence levels.
+    Shared across word, excel, and pdf verifiers.
+    """
+    matched = sum(1 for r in content_results if r.status == ContentStatus.MATCHED)
+    mismatched = sum(
+        1 for r in content_results if r.status == ContentStatus.MISMATCHED
+    )
+    missing = sum(1 for r in content_results if r.status == ContentStatus.MISSING)
+
+    conf_counts = count_confidence(expected_answers)
+
+    return VerificationSummary(
+        total=len(expected_answers),
+        matched=matched,
+        mismatched=mismatched,
+        missing=missing,
+        structural_issues=structural_issues_count,
+        **conf_counts,
+    )
+
+
 def _resolve_from_base64(
     file_bytes_b64: str, file_type: str | None
 ) -> tuple[bytes, FileType]:
@@ -158,6 +226,12 @@ def _resolve_from_base64(
         raise ValueError(
             "file_type is required when using file_bytes_b64. "
             "Pass file_type='word', 'excel', or 'pdf'."
+        )
+
+    if len(file_bytes_b64) > MAX_BASE64_LENGTH:
+        raise ValueError(
+            f"Base64 input exceeds maximum size "
+            f"({MAX_BASE64_LENGTH // (1024 * 1024)} MB encoded)"
         )
 
     ft = validate_file_type(file_type)

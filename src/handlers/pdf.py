@@ -25,6 +25,7 @@ from __future__ import annotations
 import fitz
 
 from src.handlers.pdf_indexer import (
+    _map_widget_type,
     extract_structure_compact,  # noqa: F401 — re-exported
 )
 from src.handlers.pdf_verifier import (
@@ -159,15 +160,5 @@ def _collect_field_dicts(doc: fitz.Document) -> list[dict]:
     return fields
 
 
-_WIDGET_TYPE_NAMES: dict[int, str] = {
-    fitz.PDF_WIDGET_TYPE_TEXT: "text",
-    fitz.PDF_WIDGET_TYPE_CHECKBOX: "checkbox",
-    fitz.PDF_WIDGET_TYPE_COMBOBOX: "dropdown",
-    fitz.PDF_WIDGET_TYPE_LISTBOX: "listbox",
-    fitz.PDF_WIDGET_TYPE_RADIOBUTTON: "radio",
-}
 
-
-def _map_widget_type(widget_type: int) -> str:
-    """Convert PyMuPDF widget type constant to a human-readable string."""
-    return _WIDGET_TYPE_NAMES.get(widget_type, f"unknown({widget_type})")
+# _map_widget_type imported from pdf_indexer (single source of truth)

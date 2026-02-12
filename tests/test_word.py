@@ -459,7 +459,7 @@ class TestWriteAnswers:
             insertion_xml=f'<w:r xmlns:w="{W}"><w:t>X</w:t></w:r>',
             mode=InsertionMode.REPLACE_CONTENT,
         )]
-        with pytest.raises(ValueError, match="did not match"):
+        with pytest.raises(ValueError, match="does not match expected pattern"):
             write_answers(table_docx, answers)
 
 

@@ -48,7 +48,12 @@ from src.models import (
     InsertionMode,
     LocationSnippet,
 )
-from src.validators import resolve_file_input
+from src.validators import (
+    MAX_ANSWERS,
+    MAX_FILE_SIZE,
+    resolve_file_input,
+    validate_path_safe,
+)
 
 mcp = FastMCP("form-filler")
 
@@ -66,15 +71,23 @@ def _resolve_answers_input(
     overwhelming the agent's context window. Falls back to inline answers.
     """
     if answers_file_path:
-        path = Path(answers_file_path)
+        path = validate_path_safe(answers_file_path)
         if not path.is_file():
-            raise ValueError(f"answers_file_path not found: {answers_file_path}")
+            raise ValueError("Answers file not found or not accessible")
+        if path.stat().st_size > MAX_FILE_SIZE:
+            raise ValueError("Answers file exceeds maximum size")
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, list):
             raise ValueError("answers_file_path must contain a JSON array")
+        if len(data) > MAX_ANSWERS:
+            raise ValueError(f"Too many answers ({len(data)}). Max is {MAX_ANSWERS}.")
         return data
 
     if answers:
+        if len(answers) > MAX_ANSWERS:
+            raise ValueError(
+                f"Too many answers ({len(answers)}). Max is {MAX_ANSWERS}."
+            )
         return answers
 
     raise ValueError(
@@ -297,7 +310,7 @@ def write_answers(
         )
 
     if output_file_path:
-        out = Path(output_file_path)
+        out = validate_path_safe(output_file_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(result_bytes)
         return {"file_path": str(out)}

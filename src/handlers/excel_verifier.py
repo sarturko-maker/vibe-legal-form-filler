@@ -33,9 +33,8 @@ from src.models import (
     ContentStatus,
     ExpectedAnswer,
     VerificationReport,
-    VerificationSummary,
 )
-from src.validators import count_confidence
+from src.validators import build_verification_summary
 
 
 def verify_output(
@@ -51,22 +50,7 @@ def verify_output(
     content_results = _verify_content(wb, expected_answers)
     wb.close()
 
-    matched = sum(1 for r in content_results if r.status == ContentStatus.MATCHED)
-    mismatched = sum(
-        1 for r in content_results if r.status == ContentStatus.MISMATCHED
-    )
-    missing = sum(1 for r in content_results if r.status == ContentStatus.MISSING)
-
-    conf_counts = count_confidence(expected_answers)
-
-    summary = VerificationSummary(
-        total=len(expected_answers),
-        matched=matched,
-        mismatched=mismatched,
-        missing=missing,
-        structural_issues=0,
-        **conf_counts,
-    )
+    summary = build_verification_summary(content_results, expected_answers)
 
     return VerificationReport(
         structural_issues=[],
