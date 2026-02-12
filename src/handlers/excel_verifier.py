@@ -116,7 +116,7 @@ def _verify_content(
         cell_value = ws.cell(row=row, column=col).value
         actual_text = str(cell_value) if cell_value is not None else ""
 
-        if answer.expected_text in actual_text:
+        if answer.expected_text.lower() in actual_text.lower():
             status = ContentStatus.MATCHED
         else:
             status = ContentStatus.MISMATCHED

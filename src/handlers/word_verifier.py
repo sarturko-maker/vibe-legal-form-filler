@@ -86,7 +86,7 @@ def _verify_content(
             continue
 
         actual_text = _extract_text(matched[0])
-        if answer.expected_text in actual_text:
+        if answer.expected_text.lower() in actual_text.lower():
             status = ContentStatus.MATCHED
         else:
             status = ContentStatus.MISMATCHED

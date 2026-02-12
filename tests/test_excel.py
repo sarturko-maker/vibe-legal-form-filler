@@ -324,6 +324,22 @@ class TestVerifyOutput:
         report = verify_output(vendor_xlsx, expected)
         assert report.summary.missing == 1
 
+    def test_case_insensitive_match(self, vendor_xlsx: bytes) -> None:
+        """Substring comparison should be case-insensitive."""
+        expected = [
+            ExpectedAnswer(
+                pair_id="q1", xpath="S1-R8-C2",
+                expected_text="jane smith",
+            ),
+            ExpectedAnswer(
+                pair_id="q2", xpath="S1-R8-C2",
+                expected_text="JANE SMITH",
+            ),
+        ]
+        report = verify_output(vendor_xlsx, expected)
+        assert report.summary.matched == 2
+        assert report.summary.mismatched == 0
+
     def test_no_structural_issues(self, vendor_xlsx: bytes) -> None:
         expected = [
             ExpectedAnswer(
