@@ -9,11 +9,16 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from src.handlers import excel as excel_handler
+from src.handlers import pdf as pdf_handler
 from src.handlers import word as word_handler
 from src.handlers.excel_indexer import (
     extract_structure_compact as excel_extract_compact,
 )
 from src.handlers.excel_verifier import verify_output as excel_verify_output
+from src.handlers.pdf_indexer import (
+    extract_structure_compact as pdf_extract_compact,
+)
+from src.handlers.pdf_verifier import verify_output as pdf_verify_output
 from src.handlers.word_indexer import (
     extract_structure_compact as word_extract_compact,
 )
@@ -99,6 +104,10 @@ def extract_structure_compact(
         result = excel_extract_compact(raw)
         return result.model_dump()
 
+    if ft == FileType.PDF:
+        result = pdf_extract_compact(raw)
+        return result.model_dump()
+
     raise NotImplementedError(
         f"extract_structure_compact not yet implemented for {ft.value}"
     )
@@ -135,6 +144,10 @@ def extract_structure(
         result = excel_handler.extract_structure(raw)
         return {"sheets_json": result.sheets_json}
 
+    if ft == FileType.PDF:
+        result = pdf_handler.extract_structure(raw)
+        return {"fields": [f.model_dump() for f in result.fields]}
+
     raise NotImplementedError(f"extract_structure not yet implemented for {ft.value}")
 
 
@@ -166,6 +179,11 @@ def validate_locations(
     if ft == FileType.EXCEL:
         locs = [LocationSnippet(**loc) for loc in locations]
         validated = excel_handler.validate_locations(raw, locs)
+        return {"validated": [v.model_dump() for v in validated]}
+
+    if ft == FileType.PDF:
+        locs = [LocationSnippet(**loc) for loc in locations]
+        validated = pdf_handler.validate_locations(raw, locs)
         return {"validated": [v.model_dump() for v in validated]}
 
     raise NotImplementedError(f"validate_locations not yet implemented for {ft.value}")
@@ -243,6 +261,20 @@ def write_answers(
         ]
         result_bytes = excel_handler.write_answers(raw, payloads)
 
+    elif ft == FileType.PDF:
+        payloads = [
+            AnswerPayload(
+                pair_id=a["pair_id"],
+                xpath=a.get("xpath") or a.get("field_id", ""),
+                insertion_xml=a.get("insertion_xml") or a.get("value", ""),
+                mode=InsertionMode(
+                    a.get("mode", InsertionMode.REPLACE_CONTENT.value)
+                ),
+            )
+            for a in answer_dicts
+        ]
+        result_bytes = pdf_handler.write_answers(raw, payloads)
+
     else:
         raise NotImplementedError(
             f"write_answers not yet implemented for {ft.value}"
@@ -288,6 +320,11 @@ def verify_output(
         report = excel_verify_output(raw, answers)
         return report.model_dump()
 
+    if ft == FileType.PDF:
+        answers = [ExpectedAnswer(**a) for a in expected_answers]
+        report = pdf_verify_output(raw, answers)
+        return report.model_dump()
+
     raise NotImplementedError(f"verify_output not yet implemented for {ft.value}")
 
 
@@ -314,6 +351,10 @@ def list_form_fields(
 
     if ft == FileType.EXCEL:
         fields = excel_handler.list_form_fields(raw)
+        return {"fields": [f.model_dump() for f in fields]}
+
+    if ft == FileType.PDF:
+        fields = pdf_handler.list_form_fields(raw)
         return {"fields": [f.model_dump() for f in fields]}
 
     raise NotImplementedError(f"list_form_fields not yet implemented for {ft.value}")

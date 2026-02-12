@@ -1,17 +1,14 @@
-"""Excel (.xlsx) output verification — reads cells and compares to expected values.
+"""PDF output verification — reads widget values and compares to expected.
 
-Post-write verification tool. No structural validation needed for Excel
-(openpyxl guarantees valid .xlsx output). Only content verification:
-read cell value at each location, compare to expected text (substring match).
+No structural validation needed (PyMuPDF handles PDF integrity).
+Only content verification: read widget value at each field ID location,
+compare to expected text (case-insensitive substring match).
 """
 
 from __future__ import annotations
 
-from io import BytesIO
+import fitz
 
-import openpyxl
-
-from src.handlers.excel_writer import _parse_cell_id
 from src.models import (
     ContentResult,
     ContentStatus,
@@ -25,15 +22,15 @@ from src.validators import count_confidence
 def verify_output(
     file_bytes: bytes, expected_answers: list[ExpectedAnswer]
 ) -> VerificationReport:
-    """Verify that all expected answers appear in the filled workbook.
+    """Verify that all expected answers appear in the filled PDF.
 
-    file_bytes: the filled .xlsx file bytes.
-    expected_answers: list of expected text at specific cell IDs.
+    file_bytes: the filled PDF bytes.
+    expected_answers: list of expected text at specific field IDs.
     Returns a VerificationReport with content results and summary.
     """
-    wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
-    content_results = _verify_content(wb, expected_answers)
-    wb.close()
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    content_results = _verify_content(doc, expected_answers)
+    doc.close()
 
     matched = sum(1 for r in content_results if r.status == ContentStatus.MATCHED)
     mismatched = sum(
@@ -60,25 +57,15 @@ def verify_output(
 
 
 def _verify_content(
-    wb: openpyxl.Workbook, expected_answers: list[ExpectedAnswer]
+    doc: fitz.Document, expected_answers: list[ExpectedAnswer]
 ) -> list[ContentResult]:
-    """Compare expected text against actual cell values."""
+    """Compare expected text against actual widget values."""
+    field_index = _build_value_index(doc)
     results: list[ContentResult] = []
 
     for answer in expected_answers:
-        cell_id = answer.xpath
-        try:
-            sheet_idx, row, col = _parse_cell_id(cell_id)
-        except ValueError:
-            results.append(ContentResult(
-                pair_id=answer.pair_id,
-                status=ContentStatus.MISSING,
-                expected=answer.expected_text,
-                actual=f"Invalid cell ID: {cell_id}",
-            ))
-            continue
-
-        if sheet_idx < 1 or sheet_idx > len(wb.worksheets):
+        field_id = answer.xpath  # For PDF, xpath holds the F-ID
+        if field_id not in field_index:
             results.append(ContentResult(
                 pair_id=answer.pair_id,
                 status=ContentStatus.MISSING,
@@ -87,10 +74,7 @@ def _verify_content(
             ))
             continue
 
-        ws = wb.worksheets[sheet_idx - 1]
-        cell_value = ws.cell(row=row, column=col).value
-        actual_text = str(cell_value) if cell_value is not None else ""
-
+        actual_text = field_index[field_id]
         if answer.expected_text.lower() in actual_text.lower():
             status = ContentStatus.MATCHED
         else:
@@ -104,3 +88,22 @@ def _verify_content(
         ))
 
     return results
+
+
+def _build_value_index(doc: fitz.Document) -> dict[str, str]:
+    """Build a mapping from F-ID to current widget value.
+
+    Iterates in the same deterministic order as the indexer and writer.
+    """
+    index: dict[str, str] = {}
+    counter = 0
+
+    for page_num in range(doc.page_count):
+        page = doc[page_num]
+        for widget in page.widgets():
+            counter += 1
+            field_id = f"F{counter}"
+            value = widget.field_value
+            index[field_id] = str(value) if value is not None else ""
+
+    return index

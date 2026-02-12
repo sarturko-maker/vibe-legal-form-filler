@@ -102,6 +102,38 @@ def _resolve_from_path(file_path: str, file_type: str | None) -> tuple[bytes, Fi
     return raw, ft
 
 
+def count_confidence(expected_answers: list) -> dict:
+    """Count confidence levels across expected answers and build a summary note.
+
+    Works with any list of objects that have a .confidence attribute
+    (e.g. ExpectedAnswer). Returns a dict with confidence_known,
+    confidence_uncertain, confidence_unknown, and confidence_note.
+    """
+    from src.models import Confidence
+
+    known = sum(1 for a in expected_answers if a.confidence == Confidence.KNOWN)
+    uncertain = sum(1 for a in expected_answers if a.confidence == Confidence.UNCERTAIN)
+    unknown = sum(1 for a in expected_answers if a.confidence == Confidence.UNKNOWN)
+
+    parts = []
+    if known:
+        parts.append(f"{known} known")
+    if uncertain:
+        parts.append(f"{uncertain} uncertain")
+    if unknown:
+        parts.append(f"{unknown} unknown")
+    note = ", ".join(parts)
+    if uncertain or unknown:
+        note += " — manual review needed"
+
+    return {
+        "confidence_known": known,
+        "confidence_uncertain": uncertain,
+        "confidence_unknown": unknown,
+        "confidence_note": note,
+    }
+
+
 def _resolve_from_base64(
     file_bytes_b64: str, file_type: str | None
 ) -> tuple[bytes, FileType]:

@@ -13,13 +13,13 @@ from io import BytesIO
 from lxml import etree
 
 from src.models import (
-    Confidence,
     ContentResult,
     ContentStatus,
     ExpectedAnswer,
     VerificationReport,
     VerificationSummary,
 )
+from src.validators import count_confidence
 from src.xml_utils import NAMESPACES
 
 WORD_NAMESPACE_URI = NAMESPACES["w"]
@@ -101,31 +101,6 @@ def _verify_content(
     return results
 
 
-def _count_confidence(expected_answers: list[ExpectedAnswer]) -> dict:
-    """Count confidence levels and build a summary note."""
-    known = sum(1 for a in expected_answers if a.confidence == Confidence.KNOWN)
-    uncertain = sum(1 for a in expected_answers if a.confidence == Confidence.UNCERTAIN)
-    unknown = sum(1 for a in expected_answers if a.confidence == Confidence.UNKNOWN)
-
-    parts = []
-    if known:
-        parts.append(f"{known} known")
-    if uncertain:
-        parts.append(f"{uncertain} uncertain")
-    if unknown:
-        parts.append(f"{unknown} unknown")
-    note = ", ".join(parts)
-    if uncertain or unknown:
-        note += " — manual review needed"
-
-    return {
-        "confidence_known": known,
-        "confidence_uncertain": uncertain,
-        "confidence_unknown": unknown,
-        "confidence_note": note,
-    }
-
-
 def verify_output(
     file_bytes: bytes, expected_answers: list[ExpectedAnswer]
 ) -> VerificationReport:
@@ -152,7 +127,7 @@ def verify_output(
     )
     missing = sum(1 for r in content_results if r.status == ContentStatus.MISSING)
 
-    conf_counts = _count_confidence(expected_answers)
+    conf_counts = count_confidence(expected_answers)
 
     summary = VerificationSummary(
         total=len(expected_answers),
