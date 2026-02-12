@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -31,6 +32,36 @@ from src.validators import resolve_file_input
 mcp = FastMCP("form-filler")
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+
+def _resolve_answers_input(
+    answers: list[dict] | None,
+    answers_file_path: str,
+) -> list[dict]:
+    """Resolve answers from inline list or JSON file on disk.
+
+    Prefer answers_file_path for large payloads (>20 answers) to avoid
+    overwhelming the agent's context window. Falls back to inline answers.
+    """
+    if answers_file_path:
+        path = Path(answers_file_path)
+        if not path.is_file():
+            raise ValueError(f"answers_file_path not found: {answers_file_path}")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            raise ValueError("answers_file_path must contain a JSON array")
+        return data
+
+    if answers:
+        return answers
+
+    raise ValueError(
+        "Provide either answers (inline) or answers_file_path. "
+        "Neither was supplied."
+    )
+
+
 # ── Tools ──────────────────────────────────────────────────────────────────────
 
 
@@ -47,6 +78,10 @@ def extract_structure_compact(
     answer targets, and flags complex elements.
 
     This is the primary extraction tool — response is a few KB, not 134KB.
+
+    Use this on the form/questionnaire you want to fill. For reference or
+    knowledge documents, the agent should read them using its own file
+    tools, not this MCP tool.
 
     file_path: path to the document on disk (preferred for interactive use).
     file_bytes_b64: base64-encoded file bytes (for programmatic use).
@@ -80,6 +115,10 @@ def extract_structure(
     Word: full <w:body> XML.  Excel: JSON of sheets/rows/cells.  PDF: list of
     fillable field names, types, and current values.
 
+    Use this on the form/questionnaire you want to fill. For reference or
+    knowledge documents, the agent should read them using its own file
+    tools, not this MCP tool.
+
     file_path: path to the document on disk (preferred for interactive use).
     file_bytes_b64: base64-encoded file bytes (for programmatic use).
     Provide one or the other. file_type is auto-inferred from file_path extension.
@@ -109,6 +148,7 @@ def validate_locations(
     """Confirm that each location snippet actually exists in the document.
 
     Returns match status and XPath/reference for each snippet.
+    Use on the form being filled, not on reference documents.
 
     file_path: path to the document on disk (preferred for interactive use).
     file_bytes_b64: base64-encoded file bytes (for programmatic use).
@@ -152,17 +192,21 @@ def build_insertion_xml(
 
 @mcp.tool()
 def write_answers(
-    answers: list[dict],
+    answers: list[dict] | None = None,
     file_bytes_b64: str = "",
     file_type: str = "",
     file_path: str = "",
     output_file_path: str = "",
+    answers_file_path: str = "",
 ) -> dict:
     """Write all answers into the document and return the completed file bytes.
 
     file_path: path to the document on disk (preferred for interactive use).
     file_bytes_b64: base64-encoded file bytes (for programmatic use).
     answers: list of {pair_id, xpath, insertion_xml, mode} dicts.
+    answers_file_path: path to a JSON file containing the answers array.
+        Use this instead of inline answers for large payloads (>20 answers)
+        to avoid overwhelming the agent's context window.
     output_file_path: when provided, writes result to disk instead of returning b64.
 
     Returns {file_bytes_b64: ...} or {file_path: ...} when output_file_path is set.
@@ -170,6 +214,8 @@ def write_answers(
     raw, ft = resolve_file_input(
         file_bytes_b64 or None, file_type or None, file_path or None
     )
+
+    answer_dicts = _resolve_answers_input(answers, answers_file_path)
 
     if ft == FileType.WORD:
         payloads = [
@@ -179,7 +225,7 @@ def write_answers(
                 insertion_xml=a["insertion_xml"],
                 mode=InsertionMode(a["mode"]),
             )
-            for a in answers
+            for a in answer_dicts
         ]
         result_bytes = word_handler.write_answers(raw, payloads)
 
@@ -193,7 +239,7 @@ def write_answers(
                     a.get("mode", InsertionMode.REPLACE_CONTENT.value)
                 ),
             )
-            for a in answers
+            for a in answer_dicts
         ]
         result_bytes = excel_handler.write_answers(raw, payloads)
 
@@ -252,6 +298,8 @@ def list_form_fields(
     file_path: str = "",
 ) -> dict:
     """Return a plain inventory of all fillable targets found by code (not AI).
+
+    Use on the form being filled, not on reference documents.
 
     file_path: path to the document on disk (preferred for interactive use).
     file_bytes_b64: base64-encoded file bytes (for programmatic use).

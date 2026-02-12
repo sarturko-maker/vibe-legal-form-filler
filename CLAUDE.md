@@ -96,25 +96,33 @@ The agent combines all three sources when generating answers. The MCP server onl
 ### How the Calling Agent Orchestrates This
 
 ```
-1. User drops in: form document path + optional instructions
+1. User drops in: form document path + optional reference/knowledge documents + instructions
 2. Agent calls extract_structure_compact(file_path="form.docx")
    → gets compact indexed representation (no base64 encoding needed)
-3. Agent reads compact_text → identifies question/answer pairs by element ID
-   (AI uses agent's institutional knowledge to understand context)
-4. Agent calls validate_locations(file_path="form.docx", ...) → confirms IDs are real
-5. Agent generates answers using: institutional knowledge + user instructions
-6. Agent calls build_insertion_xml for each answer → gets OOXML to insert
-7. Agent calls write_answers(file_path="form.docx", output_file_path="filled.docx", ...)
+   NOTE: MCP tools are only for the form being filled, not reference documents.
+3. Agent reads reference/knowledge documents using its own native file tools
+   (not MCP tools). These provide the answers the agent will use.
+4. Agent reads compact_text → identifies question/answer pairs by element ID
+   (AI uses agent's institutional knowledge + reference docs to understand context)
+5. Agent calls validate_locations(file_path="form.docx", ...) → confirms IDs are real
+6. Agent generates answers using: institutional knowledge + reference docs + user instructions
+   For each question, assess confidence: "known", "uncertain", or "unknown".
+   Do NOT include "unknown" answers in the write_answers call — leave those cells empty.
+7. Agent calls build_insertion_xml for each answer → gets OOXML to insert
+8. Agent calls write_answers(file_path="form.docx", output_file_path="filled.docx", ...)
    → filled document written to disk
-8. Agent calls verify_output(file_path="filled.docx", expected_answers=[...])
+   For large answer sets (>20), write answers to a JSON file and use answers_file_path.
+9. Agent calls verify_output(file_path="filled.docx", expected_answers=[...])
    → confirms all answers were written correctly and structure is valid
+   Include confidence field on each expected_answer for the summary report.
+10. Agent reports unknown questions to the user for manual completion.
 ```
 
 ## MCP Tools
 
 ### `extract_structure_compact(file_path | file_bytes_b64, file_type?) → compact representation` *(primary)*
 
-The default first step in the pipeline. Walks the document body and returns a compact, human-readable indexed representation instead of raw XML. Designed to fit comfortably in an agent's conversation context (a few KB, not 134KB).
+The default first step in the pipeline. Walks the document body and returns a compact, human-readable indexed representation instead of raw XML. Designed to fit comfortably in an agent's conversation context (a few KB, not 134KB). Use this on the form/questionnaire you want to fill — not on reference or knowledge documents.
 
 For Word, the response contains:
 - **`compact_text`** — indexed representation with stable element IDs and text content
@@ -176,7 +184,7 @@ S2-R5-C1: "Notes:" [merged: S2-R5-C1:S2-R6-C1]
 
 ### `extract_structure(file_path | file_bytes_b64, file_type?) → document structure` *(alternative)*
 
-Returns the raw OOXML body (Word) or structured representation (Excel/PDF). Use this only when the calling agent has a large context window and needs to work directly with raw XML.
+Returns the raw OOXML body (Word) or structured representation (Excel/PDF). Use this only when the calling agent has a large context window and needs to work directly with raw XML. Use on the form being filled — not on reference or knowledge documents.
 
 For Word: returns the full `<w:body>` XML as a string (~134KB for a typical questionnaire). The calling agent sends this to AI with a prompt like "identify question/answer pairs and return each answer location as an OOXML snippet."
 
@@ -243,7 +251,7 @@ For Excel: not needed — openpyxl writes cell values directly.
 
 For PDF: not needed — PyPDFForm fills fields by name.
 
-### `write_answers(file_path | file_bytes_b64, file_type?, answers[], output_file_path?) → filled_file_bytes`
+### `write_answers(file_path | file_bytes_b64, file_type?, answers[]?, answers_file_path?, output_file_path?) → filled_file_bytes`
 
 Each answer (Word):
 ```json
@@ -267,6 +275,8 @@ Each answer (Excel — simpler, no insertion XML needed):
 
 For Excel, `insertion_xml` holds the plain text cell value (not XML). Only `replace_content` mode is supported — it writes the value directly to the cell using openpyxl.
 
+**`answers_file_path`** *(recommended for large payloads)* — path to a JSON file containing the answers array. The agent writes its answers to a JSON file on disk and passes the path instead of inlining 50+ answer objects as tool parameters. This avoids overwhelming the agent's context window during generation. JSON schema: `[{"pair_id": "q1", "xpath": "S1-R2-C3", "insertion_xml": "answer text", "mode": "replace_content"}, ...]`. The inline `answers` parameter remains as a fallback for small payloads.
+
 Modes (Word):
 - `replace_content` — clears existing content in the target element, inserts new
 - `append` — adds after existing content
@@ -283,7 +293,8 @@ Each expected_answer is:
 {
   "pair_id": "q1",
   "xpath": "/w:body/w:tbl[2]/w:tr[3]/w:tc[2]",
-  "expected_text": "Acme Corporation"
+  "expected_text": "Acme Corporation",
+  "confidence": "known"
 }
 ```
 
@@ -299,6 +310,8 @@ Each expected_answer is:
 - For each expected_answer, locates the element at the XPath (Word) or cell ID (Excel)
 - Extracts text content and compares against expected_text (substring match)
 
+The optional **`confidence`** field (`"known"`, `"uncertain"`, `"unknown"`, default `"known"`) is carried through for reporting. The summary includes confidence counts so the user knows how many answers need manual review.
+
 Returns:
 ```json
 {
@@ -306,7 +319,11 @@ Returns:
   "content_results": [
     {"pair_id": "q1", "status": "matched", "expected": "Acme Corp", "actual": "Acme Corp"}
   ],
-  "summary": {"total": 53, "matched": 53, "mismatched": 0, "missing": 0, "structural_issues": 0}
+  "summary": {
+    "total": 53, "matched": 50, "mismatched": 0, "missing": 3, "structural_issues": 0,
+    "confidence_known": 42, "confidence_uncertain": 3, "confidence_unknown": 8,
+    "confidence_note": "42 known, 3 uncertain, 8 unknown — manual review needed"
+  }
 }
 ```
 
@@ -468,6 +485,28 @@ All XPath queries must use these prefixes. Snippet matching should normalise whi
 - No file watching or background processes
 - No image-based form detection (only structured documents)
 - No non-fillable PDF support (no OCR, no image PDFs)
+
+## Agent Guidance
+
+Recommended practices for copilot agents using these MCP tools:
+
+### Use the right tool for the right document
+- **MCP tools** (`extract_structure_compact`, `validate_locations`, `write_answers`, etc.) are exclusively for operating on the **form being filled** — the questionnaire, the application, the assessment.
+- **Reference/knowledge documents** (company policies, previous questionnaires, knowledge bases) should be read using the agent's own native file tools (e.g. `Read`, file upload, attached context). Do not pass knowledge documents to MCP tools.
+
+### Handle large answer sets efficiently
+- For small payloads (up to ~20 answers), pass answers inline to `write_answers`.
+- For large payloads (>20 answers), write the answers array to a JSON file on disk and use `answers_file_path`. This avoids generating enormous tool-call parameters that overwhelm the agent's context window.
+
+### Assess confidence honestly
+- For each question, assess whether the knowledge source contains relevant information.
+- If it does, include the answer with confidence `"known"`.
+- If you can reasonably infer an answer but are not certain, mark it `"uncertain"`.
+- If you cannot answer, mark it `"unknown"` and **do not include it in the `write_answers` call** — leave the cell empty so the user can fill it manually.
+- After the pipeline completes, report all unknown questions to the user so they can fill those manually.
+
+### Batch if context-constrained
+- If the form has many questions and the agent's context window is limited, process sections in batches: extract → identify → validate → write for each batch.
 
 ## Testing Strategy
 

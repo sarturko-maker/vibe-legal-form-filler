@@ -27,6 +27,12 @@ class InsertionMode(str, Enum):
     REPLACE_PLACEHOLDER = "replace_placeholder"
 
 
+class Confidence(str, Enum):
+    KNOWN = "known"
+    UNCERTAIN = "uncertain"
+    UNKNOWN = "unknown"
+
+
 class LocationStatus(str, Enum):
     MATCHED = "matched"
     NOT_FOUND = "not_found"
@@ -106,6 +112,7 @@ class AnswerPayload(BaseModel):
     xpath: str            # Word/Excel/PDF target reference
     insertion_xml: str    # pre-built XML (Word) or plain value (Excel/PDF)
     mode: InsertionMode
+    confidence: Confidence = Confidence.KNOWN
 
 
 class WriteAnswersRequest(BaseModel):
@@ -148,6 +155,7 @@ class ExpectedAnswer(BaseModel):
     pair_id: str
     xpath: str
     expected_text: str
+    confidence: Confidence = Confidence.KNOWN
 
 
 class ContentResult(BaseModel):
@@ -163,6 +171,10 @@ class VerificationSummary(BaseModel):
     mismatched: int
     missing: int
     structural_issues: int
+    confidence_known: int = 0
+    confidence_uncertain: int = 0
+    confidence_unknown: int = 0
+    confidence_note: str = ""
 
 
 class VerificationReport(BaseModel):
