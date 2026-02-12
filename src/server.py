@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from src.handlers import word as word_handler
+from src.handlers.word_indexer import (
+    extract_structure_compact as word_extract_compact,
+)
 from src.models import (
     AnswerPayload,
     AnswerType,
@@ -15,7 +19,7 @@ from src.models import (
     InsertionMode,
     LocationSnippet,
 )
-from src.validators import validate_file_bytes, validate_file_type
+from src.validators import resolve_file_input
 
 mcp = FastMCP("form-filler")
 
@@ -24,17 +28,54 @@ mcp = FastMCP("form-filler")
 
 
 @mcp.tool()
-def extract_structure(file_bytes_b64: str, file_type: str) -> dict:
+def extract_structure_compact(
+    file_bytes_b64: str = "",
+    file_type: str = "",
+    file_path: str = "",
+) -> dict:
+    """Return a compact, indexed representation of the document structure.
+
+    Walks the document body and assigns stable element IDs (T1-R2-C1 for
+    table cells, P5 for paragraphs). Includes formatting hints, marks
+    answer targets, and flags complex elements.
+
+    This is the primary extraction tool — response is a few KB, not 134KB.
+
+    file_path: path to the document on disk (preferred for interactive use).
+    file_bytes_b64: base64-encoded file bytes (for programmatic use).
+    Provide one or the other. file_type is auto-inferred from file_path extension.
+    """
+    raw, ft = resolve_file_input(
+        file_bytes_b64 or None, file_type or None, file_path or None
+    )
+
+    if ft == FileType.WORD:
+        result = word_extract_compact(raw)
+        return result.model_dump()
+
+    raise NotImplementedError(
+        f"extract_structure_compact not yet implemented for {ft.value}"
+    )
+
+
+@mcp.tool()
+def extract_structure(
+    file_bytes_b64: str = "",
+    file_type: str = "",
+    file_path: str = "",
+) -> dict:
     """Return the document structure so the calling agent can identify Q/A pairs.
 
     Word: full <w:body> XML.  Excel: JSON of sheets/rows/cells.  PDF: list of
     fillable field names, types, and current values.
 
-    file_bytes_b64: base64-encoded file bytes.
+    file_path: path to the document on disk (preferred for interactive use).
+    file_bytes_b64: base64-encoded file bytes (for programmatic use).
+    Provide one or the other. file_type is auto-inferred from file_path extension.
     """
-    ft = validate_file_type(file_type)
-    raw = base64.b64decode(file_bytes_b64)
-    validate_file_bytes(raw, ft)
+    raw, ft = resolve_file_input(
+        file_bytes_b64 or None, file_type or None, file_path or None
+    )
 
     if ft == FileType.WORD:
         result = word_handler.extract_structure(raw)
@@ -45,18 +86,22 @@ def extract_structure(file_bytes_b64: str, file_type: str) -> dict:
 
 @mcp.tool()
 def validate_locations(
-    file_bytes_b64: str, file_type: str, locations: list[dict]
+    locations: list[dict],
+    file_bytes_b64: str = "",
+    file_type: str = "",
+    file_path: str = "",
 ) -> dict:
     """Confirm that each location snippet actually exists in the document.
 
     Returns match status and XPath/reference for each snippet.
 
-    file_bytes_b64: base64-encoded file bytes.
+    file_path: path to the document on disk (preferred for interactive use).
+    file_bytes_b64: base64-encoded file bytes (for programmatic use).
     locations: list of {pair_id, snippet} dicts.
     """
-    ft = validate_file_type(file_type)
-    raw = base64.b64decode(file_bytes_b64)
-    validate_file_bytes(raw, ft)
+    raw, ft = resolve_file_input(
+        file_bytes_b64 or None, file_type or None, file_path or None
+    )
 
     if ft == FileType.WORD:
         locs = [LocationSnippet(**loc) for loc in locations]
@@ -87,18 +132,24 @@ def build_insertion_xml(
 
 @mcp.tool()
 def write_answers(
-    file_bytes_b64: str, file_type: str, answers: list[dict]
+    answers: list[dict],
+    file_bytes_b64: str = "",
+    file_type: str = "",
+    file_path: str = "",
+    output_file_path: str = "",
 ) -> dict:
     """Write all answers into the document and return the completed file bytes.
 
-    file_bytes_b64: base64-encoded file bytes.
+    file_path: path to the document on disk (preferred for interactive use).
+    file_bytes_b64: base64-encoded file bytes (for programmatic use).
     answers: list of {pair_id, xpath, insertion_xml, mode} dicts.
+    output_file_path: when provided, writes result to disk instead of returning b64.
 
-    Returns {file_bytes_b64: base64-encoded result}.
+    Returns {file_bytes_b64: ...} or {file_path: ...} when output_file_path is set.
     """
-    ft = validate_file_type(file_type)
-    raw = base64.b64decode(file_bytes_b64)
-    validate_file_bytes(raw, ft)
+    raw, ft = resolve_file_input(
+        file_bytes_b64 or None, file_type or None, file_path or None
+    )
 
     if ft == FileType.WORD:
         payloads = [
@@ -111,20 +162,32 @@ def write_answers(
             for a in answers
         ]
         result_bytes = word_handler.write_answers(raw, payloads)
+
+        if output_file_path:
+            out = Path(output_file_path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(result_bytes)
+            return {"file_path": str(out)}
+
         return {"file_bytes_b64": base64.b64encode(result_bytes).decode()}
 
     raise NotImplementedError(f"write_answers not yet implemented for {ft.value}")
 
 
 @mcp.tool()
-def list_form_fields(file_bytes_b64: str, file_type: str) -> dict:
+def list_form_fields(
+    file_bytes_b64: str = "",
+    file_type: str = "",
+    file_path: str = "",
+) -> dict:
     """Return a plain inventory of all fillable targets found by code (not AI).
 
-    file_bytes_b64: base64-encoded file bytes.
+    file_path: path to the document on disk (preferred for interactive use).
+    file_bytes_b64: base64-encoded file bytes (for programmatic use).
     """
-    ft = validate_file_type(file_type)
-    raw = base64.b64decode(file_bytes_b64)
-    validate_file_bytes(raw, ft)
+    raw, ft = resolve_file_input(
+        file_bytes_b64 or None, file_type or None, file_path or None
+    )
 
     if ft == FileType.WORD:
         fields = word_handler.list_form_fields(raw)

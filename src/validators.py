@@ -1,6 +1,13 @@
-"""Shared validation logic used across handlers."""
+"""Shared validation logic used across handlers.
+
+Provides file_type validation, magic-byte checks, and the resolve_file_input()
+helper that lets MCP tools accept either a file_path or base64-encoded bytes.
+"""
 
 from __future__ import annotations
+
+import base64
+from pathlib import Path
 
 from src.models import FileType
 
@@ -9,6 +16,13 @@ _MAGIC_BYTES = {
     FileType.WORD: b"PK",       # ZIP-based (docx is a ZIP archive)
     FileType.EXCEL: b"PK",      # ZIP-based (xlsx is a ZIP archive)
     FileType.PDF: b"%PDF",
+}
+
+# Map file extensions to FileType for auto-inference
+_EXTENSION_TO_FILE_TYPE: dict[str, FileType] = {
+    ".docx": FileType.WORD,
+    ".xlsx": FileType.EXCEL,
+    ".pdf": FileType.PDF,
 }
 
 
@@ -35,3 +49,70 @@ def validate_file_bytes(file_bytes: bytes, file_type: FileType) -> None:
             f"file_bytes does not appear to be a valid {file_type.value} file "
             f"(expected magic bytes {magic!r}, got {file_bytes[:8]!r})"
         )
+
+
+def resolve_file_input(
+    file_bytes_b64: str | None,
+    file_type: str | None,
+    file_path: str | None,
+) -> tuple[bytes, FileType]:
+    """Resolve file input from either a disk path or base64-encoded bytes.
+
+    When file_path is provided, reads the file from disk and infers file_type
+    from the extension (.docx→word, .xlsx→excel, .pdf→pdf).  An explicit
+    file_type overrides the inferred value.
+
+    When file_bytes_b64 is provided instead, decodes the base64 string.
+    file_type is required in this case.
+
+    Returns (raw_bytes, FileType).  Raises ValueError on bad input.
+    """
+    if file_path:
+        return _resolve_from_path(file_path, file_type)
+
+    if file_bytes_b64:
+        return _resolve_from_base64(file_bytes_b64, file_type)
+
+    raise ValueError(
+        "Provide either file_path or file_bytes_b64. Neither was supplied."
+    )
+
+
+def _resolve_from_path(file_path: str, file_type: str | None) -> tuple[bytes, FileType]:
+    """Read bytes from disk and infer or validate file_type."""
+    path = Path(file_path)
+    if not path.is_file():
+        raise ValueError(f"File not found: {file_path}")
+
+    raw = path.read_bytes()
+
+    if file_type:
+        ft = validate_file_type(file_type)
+    else:
+        ext = path.suffix.lower()
+        ft = _EXTENSION_TO_FILE_TYPE.get(ext)
+        if ft is None:
+            supported = ", ".join(_EXTENSION_TO_FILE_TYPE.keys())
+            raise ValueError(
+                f"Cannot infer file_type from extension '{ext}'. "
+                f"Supported: {supported}. Pass file_type explicitly."
+            )
+
+    validate_file_bytes(raw, ft)
+    return raw, ft
+
+
+def _resolve_from_base64(
+    file_bytes_b64: str, file_type: str | None
+) -> tuple[bytes, FileType]:
+    """Decode base64 bytes and require an explicit file_type."""
+    if not file_type:
+        raise ValueError(
+            "file_type is required when using file_bytes_b64. "
+            "Pass file_type='word', 'excel', or 'pdf'."
+        )
+
+    ft = validate_file_type(file_type)
+    raw = base64.b64decode(file_bytes_b64)
+    validate_file_bytes(raw, ft)
+    return raw, ft
