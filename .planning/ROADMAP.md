@@ -68,7 +68,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Antigravity successfully connects to HTTP server and discovers all tools
   4. Antigravity completes full questionnaire pipeline with a sample form
   5. Documentation exists for HTTP transport usage (startup, port, flags), Claude Code setup confirmation, Gemini CLI setup, and Antigravity setup
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 04-01-PLAN.md — Create setup documentation for HTTP transport, Claude Code, Gemini CLI, and Antigravity
+- [ ] 04-02-PLAN.md — Configure and verify Gemini CLI and Antigravity HTTP connectivity and pipeline
 
 ## Progress
 
@@ -80,4 +83,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 1. Transport Setup | 0/1 | Not started | - |
 | 2. Protocol Implementation | 0/1 | Complete    | 2026-02-16 |
 | 3. HTTP Integration Testing | 0/2 | Complete    | 2026-02-16 |
-| 4. Cross-Platform Verification | 0/TBD | Not started | - |
+| 4. Cross-Platform Verification | 0/2 | Not started | - |
