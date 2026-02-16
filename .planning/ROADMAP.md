@@ -41,7 +41,8 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Server validates Origin header to prevent DNS rebinding attacks
   4. Server returns proper HTTP error responses (400/404/405/406) with JSON-RPC error bodies for invalid requests
   5. Server handles Accept header variations (strict compliance for production, wildcards accepted for localhost v1)
-**Plans**: TBD
+**Plans:** 1 plan
+- [ ] 02-01-PLAN.md — Custom 404 handler and protocol compliance tests (TRANS-03/04/05/06)
 
 ### Phase 3: HTTP Integration Testing
 **Goal**: Comprehensive test coverage proving HTTP transport correctness and transport parity
@@ -75,6 +76,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Transport Setup | 0/1 | Not started | - |
-| 2. Protocol Implementation | 0/TBD | Not started | - |
+| 2. Protocol Implementation | 0/1 | Not started | - |
 | 3. HTTP Integration Testing | 0/TBD | Not started | - |
 | 4. Cross-Platform Verification | 0/TBD | Not started | - |
