@@ -28,7 +28,8 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. User can start server with --http flag and server binds to 127.0.0.1:8000
   3. All 172 existing unit tests pass without modification (stdio mode validation)
   4. All 6 MCP tools are available in both transports (tool registration works identically)
-**Plans**: TBD
+**Plans:** 1 plan
+- [ ] 01-01-PLAN.md — CLI parsing, HTTP transport runner, entry points, test verification
 
 ### Phase 2: Protocol Implementation
 **Goal**: HTTP transport meets full MCP protocol compliance with proper header validation and error handling
@@ -73,7 +74,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Transport Setup | 0/TBD | Not started | - |
+| 1. Transport Setup | 0/1 | Not started | - |
 | 2. Protocol Implementation | 0/TBD | Not started | - |
 | 3. HTTP Integration Testing | 0/TBD | Not started | - |
 | 4. Cross-Platform Verification | 0/TBD | Not started | - |
