@@ -35,6 +35,8 @@ import sys
 
 import anyio
 import uvicorn
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from src.mcp_app import mcp
 
@@ -59,9 +61,27 @@ def check_port_available(host: str, port: int) -> bool:
         sock.close()
 
 
+async def _json_rpc_404_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Return a JSON-RPC error body for 404 Not Found.
+
+    Starlette's default 404 returns plain text (``text/plain``).  MCP
+    protocol compliance (TRANS-06) requires JSON-RPC error bodies on all
+    error responses so that clients can parse failures uniformly.
+    """
+    return JSONResponse(
+        {
+            "jsonrpc": "2.0",
+            "id": "server-error",
+            "error": {"code": -32600, "message": "Not Found"},
+        },
+        status_code=404,
+    )
+
+
 async def _run_http_async(host: str, port: int) -> None:
     """Start uvicorn serving the FastMCP Starlette app."""
     starlette_app = mcp.streamable_http_app()
+    starlette_app.exception_handlers[404] = _json_rpc_404_handler
     config = uvicorn.Config(
         starlette_app,
         host=host,
