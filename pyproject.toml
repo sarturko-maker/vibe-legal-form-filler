@@ -19,5 +19,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[project.scripts]
+mcp-form-filler = "src.server:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
