@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-17)
 ## Current Position
 
 Phase: 8 of 11 (Resolution Infrastructure)
-Plan: 0 of ? in current phase
-Status: Ready to plan
-Last activity: 2026-02-17 -- v2.1 roadmap created
+Plan: 1 of 2 in current phase
+Status: Executing
+Last activity: 2026-02-17 -- completed 08-01-PLAN.md
 
 Progress: [########..] 75% (6 of 8 completed phases across all milestones)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 9 (6 v1.0 + 3 v2.0)
+- Total plans completed: 10 (6 v1.0 + 3 v2.0 + 1 v2.1)
 - Average duration: 2.2 min
-- Total execution time: 0.33 hours
+- Total execution time: 0.37 hours
 
 **By Phase (v1.0):**
 
@@ -39,6 +39,12 @@ Progress: [########..] 75% (6 of 8 completed phases across all milestones)
 | 05-fast-path-foundation | 2 | 4 min | 2 min |
 | 06-fast-path-implementation | 1 | 2 min | 2 min |
 
+**By Phase (v2.1):**
+
+| Phase | Plans | Total | Avg/Plan |
+|-------|-------|-------|----------|
+| 08-resolution-infrastructure | 1 | 2 min | 2 min |
+
 *Updated after each plan completion*
 
 ## Accumulated Context
@@ -51,6 +57,8 @@ Recent decisions affecting current work:
 - v2.0: answer_text fast path (Approach A) over batch tool or removal -- simplest API change, backward compatible
 - v2.1: Stateless pair_id resolution via re-extraction -- small perf cost but eliminates agent xpath bookkeeping
 - Phase 7 (QA/Docs) absorbed into v2.1 Phase 11 -- overlapping scope
+- 08-01: Lazy imports in resolver to avoid loading all three handlers at module level
+- 08-01: Resolver returns dict omitting missing pair_ids rather than raising errors
 
 ### Pending Todos
 
@@ -58,11 +66,11 @@ None yet.
 
 ### Blockers/Concerns
 
-None yet. All 281 tests passing at start of v2.1.
+None. All 289 tests passing (281 existing + 8 new from 08-01).
 
 ## Session Continuity
 
 Last session: 2026-02-17
-Stopped at: v2.1 roadmap creation complete
+Stopped at: Completed 08-01-PLAN.md
 Resume file: None
-Next action: /gsd:plan-phase 8
+Next action: Execute 08-02-PLAN.md
