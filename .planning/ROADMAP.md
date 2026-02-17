@@ -38,7 +38,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 8: Resolution Infrastructure** - pair_id→xpath resolution via re-extraction for write_answers, cross-check validation (completed 2026-02-17)
 - [x] **Phase 9: Ergonomics & Tolerance** - file_path echo, improved error messages, SKIP convention, mode defaults (completed 2026-02-17)
-- [ ] **Phase 10: Verification Parity** - verify_output accepts pair_id without xpath, cross-check logic
+- [x] **Phase 10: Verification Parity** - verify_output accepts pair_id without xpath, cross-check logic (completed 2026-02-17)
 - [ ] **Phase 11: Documentation & QA** - CLAUDE.md pipeline updates, test coverage, regression validation
 
 ## Phase Details
@@ -169,7 +169,7 @@ Plans:
   2. Server resolves pair_id→xpath via re-extraction using the same logic as write_answers
   3. When both xpath and pair_id are provided, server cross-checks and warns on mismatch
   4. verify_output response includes resolution metadata (resolved_from="pair_id" or "xpath")
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 10-01-PLAN.md -- Model changes, resolution-aware validation, verify_output wiring, E2E tests
 
@@ -205,5 +205,5 @@ Plans:
 | 6. Fast Path Implementation | v2.0 | 1/1 | Complete | 2026-02-17 |
 | 8. Resolution Infrastructure | v2.1 | Complete    | 2026-02-17 | - |
 | 9. Ergonomics & Tolerance | v2.1 | Complete    | 2026-02-17 | - |
-| 10. Verification Parity | v2.1 | 0/? | Not started | - |
+| 10. Verification Parity | v2.1 | Complete    | 2026-02-17 | - |
 | 11. Documentation & QA | v2.1 | 0/? | Not started | - |
