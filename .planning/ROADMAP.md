@@ -143,8 +143,8 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Cross-check warnings are logged but do not block writes (warning in response metadata)
   5. Resolution infrastructure reuses existing id_to_xpath logic from word_location_validator.py
 **Plans:** 2/2 plans complete
-- [ ] 08-01-PLAN.md -- Create pair_id_resolver module, make AnswerPayload xpath/mode optional (TDD)
-- [ ] 08-02-PLAN.md -- Wire resolution into write path, add cross-check warnings, E2E tests
+- [x] 08-01-PLAN.md -- Create pair_id_resolver module, make AnswerPayload xpath/mode optional (TDD)
+- [x] 08-02-PLAN.md -- Wire resolution into write path, add cross-check warnings, E2E tests
 
 ### Phase 9: Ergonomics & Tolerance
 **Goal**: Small API improvements that reduce agent friction — file_path echo, better errors, SKIP convention, mode defaults
@@ -157,8 +157,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Skipped fields are reported in write_answers summary with count (e.g., "42 written, 3 skipped")
   5. mode defaults to replace_content when answer_text is provided and mode is omitted
 **Plans:** 1/1 plans complete
-Plans:
-- [ ] 09-01-PLAN.md -- file_path echo, write_answers error, SKIP convention, response summary
+- [x] 09-01-PLAN.md -- file_path echo, write_answers error, SKIP convention, response summary
 
 ### Phase 10: Verification Parity
 **Goal**: verify_output accepts pair_id without xpath, matching the write_answers capability so agents use the same identifiers for both tools
@@ -170,8 +169,7 @@ Plans:
   3. When both xpath and pair_id are provided, server cross-checks and warns on mismatch
   4. verify_output response includes resolution metadata (resolved_from="pair_id" or "xpath")
 **Plans:** 1/1 plans complete
-Plans:
-- [ ] 10-01-PLAN.md -- Model changes, resolution-aware validation, verify_output wiring, E2E tests
+- [x] 10-01-PLAN.md -- Model changes, resolution-aware validation, verify_output wiring, E2E tests
 
 ### Phase 11: Documentation & QA
 **Goal**: CLAUDE.md reflects new simplified API, all tests pass, new test coverage added for v2.1 features
@@ -186,7 +184,9 @@ Plans:
   6. New tests for pair_id→xpath resolution in write_answers exist and pass
   7. New tests for SKIP handling exist and pass
   8. New tests for verify_output with pair_id only exist and pass
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 11-01-PLAN.md -- CLAUDE.md v2.1 updates (pipeline, SKIP, fast-path guidance, project structure), docstring update, test validation
 
 ## Progress
 
@@ -203,7 +203,7 @@ Plans:
 | 4. Cross-Platform Verification | v1.0 | 2/2 | Complete | 2026-02-17 |
 | 5. Fast Path Foundation | v2.0 | 2/2 | Complete | 2026-02-17 |
 | 6. Fast Path Implementation | v2.0 | 1/1 | Complete | 2026-02-17 |
-| 8. Resolution Infrastructure | v2.1 | Complete    | 2026-02-17 | - |
-| 9. Ergonomics & Tolerance | v2.1 | Complete    | 2026-02-17 | - |
-| 10. Verification Parity | v2.1 | Complete    | 2026-02-17 | - |
-| 11. Documentation & QA | v2.1 | 0/? | Not started | - |
+| 8. Resolution Infrastructure | v2.1 | 2/2 | Complete | 2026-02-17 |
+| 9. Ergonomics & Tolerance | v2.1 | 1/1 | Complete | 2026-02-17 |
+| 10. Verification Parity | v2.1 | 1/1 | Complete | 2026-02-17 |
+| 11. Documentation & QA | v2.1 | 0/1 | Not started | - |
