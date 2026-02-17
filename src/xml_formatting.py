@@ -121,15 +121,19 @@ def _parse_element_xml(element_xml: str) -> etree._Element:
         return etree.fromstring(wrapper.encode("utf-8"), SECURE_PARSER)[0]
 
 
-def extract_formatting(element_xml: str) -> dict:
-    """Extract run-level formatting from an OOXML element as a plain dict.
+def extract_formatting_from_element(elem: etree._Element) -> dict:
+    """Extract run-level formatting from a pre-parsed lxml element as a plain dict.
+
+    Same logic as extract_formatting() but accepts an already-parsed lxml element
+    instead of an XML string. Use this when you already have a parsed element
+    (e.g. from XPath lookup) to avoid redundant parsing. This is the primary
+    extraction path; extract_formatting() delegates to this function.
 
     Looks for <w:rPr> within the element and extracts known formatting
     properties (font, size, bold, italic, underline, color). If the element
     is a paragraph, looks at the first run's properties or the paragraph-level
     rPr.
     """
-    elem = _parse_element_xml(element_xml)
     rpr = _find_run_properties(elem)
     if rpr is None:
         return {}
@@ -139,6 +143,17 @@ def extract_formatting(element_xml: str) -> dict:
     formatting.update(_extract_size_and_color(rpr))
     formatting.update(_extract_style_properties(rpr))
     return formatting
+
+
+def extract_formatting(element_xml: str) -> dict:
+    """Extract run-level formatting from an OOXML element string as a plain dict.
+
+    Parses the XML string and delegates to extract_formatting_from_element().
+    For callers that already have a parsed element, use
+    extract_formatting_from_element() directly to avoid redundant parsing.
+    """
+    elem = _parse_element_xml(element_xml)
+    return extract_formatting_from_element(elem)
 
 
 def _apply_font_properties(rpr: etree._Element, formatting: dict) -> None:

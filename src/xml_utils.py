@@ -32,6 +32,7 @@ from src.xml_snippet_matching import (  # noqa: F401
 from src.xml_formatting import (  # noqa: F401
     build_run_xml,
     extract_formatting,
+    extract_formatting_from_element,
 )
 
 from src.xml_validation import is_well_formed_ooxml  # noqa: F401

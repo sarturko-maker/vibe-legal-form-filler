@@ -125,8 +125,9 @@ class BuildInsertionXmlResponse(BaseModel):
 
 class AnswerPayload(BaseModel):
     pair_id: str
-    xpath: str            # Word/Excel/PDF target reference
-    insertion_xml: str    # pre-built XML (Word) or plain value (Excel/PDF)
+    xpath: str                          # Word/Excel/PDF target reference
+    insertion_xml: str | None = None    # pre-built XML (Word) or plain value (Excel/PDF)
+    answer_text: str | None = None      # plain text answer (fast path, Phase 6)
     mode: InsertionMode
     confidence: Confidence = Confidence.KNOWN
 
