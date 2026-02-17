@@ -1,6 +1,6 @@
 # Vibe Legal Form Filler
 
-MCP server for AI-powered form filling across Word, Excel, and PDF documents.
+An MCP toolkit for AI-powered form filling across Word, Excel, and PDF documents.
 
 ## Vibe Coded
 
@@ -10,7 +10,7 @@ This project was built entirely through "vibe coding" — an AI-assisted develop
 
 Vibe Legal Form Filler provides deterministic document manipulation tools — extract structure, validate locations, write answers, and verify output — that any AI agent can orchestrate via the [MCP protocol](https://modelcontextprotocol.io/).
 
-The server handles the hard parts of document parsing (OOXML, spreadsheet cells, AcroForm fields) and returns compact, human-readable representations with stable element IDs. The calling agent handles all reasoning: identifying questions, generating answers from its own knowledge, and deciding what to write where.
+This MCP handles the hard parts of document parsing (OOXML, spreadsheet cells, AcroForm fields) and returns compact, human-readable representations with stable element IDs. The calling agent handles all reasoning: identifying questions, generating answers from its own knowledge, and deciding what to write where.
 
 ### The Pipeline
 
@@ -24,9 +24,9 @@ The server handles the hard parts of document parsing (OOXML, spreadsheet cells,
 
 ## Key Design Principles
 
-- **How the AI fits in** — this server doesn't contain an AI model. It's a toolkit that an AI agent calls to do the document work. You bring your own AI (Claude, Gemini, Copilot — whichever you already use). The AI reads your documents, decides what goes where, and tells this server to write it. The server handles the fiddly parts — parsing OOXML, finding the right cells, preserving formatting — deterministically and repeatably.
+- **How the AI fits in** — this MCP doesn't contain an AI model. It's a toolkit that an AI agent calls to do the document work. You bring your own AI (Claude, Gemini, Copilot — whichever you already use). The AI reads your documents, decides what goes where, and tells this MCP to write it. The MCP handles the fiddly parts — parsing OOXML, finding the right cells, preserving formatting — deterministically and repeatably.
 - **Agent-agnostic** — works with any copilot agent that speaks MCP (Claude, GPT, custom agents).
-- **Privacy-first (BYOK)** — no data leaves the server. Your documents, your agent, your knowledge.
+- **No built-in AI, no cloud calls** — this MCP is pure document manipulation. It never sends your data anywhere. However, the AI agent you connect it to (Claude, GPT, etc.) *will* process your document content through its own model — that's how it reads questions and generates answers. Your data privacy depends on whichever AI provider you choose, not on this MCP.
 - **Format-agnostic pipeline** — the same extract → validate → write → verify flow works across all supported formats.
 
 ## Supported Formats
@@ -45,7 +45,7 @@ The server handles the hard parts of document parsing (OOXML, spreadsheet cells,
 pip install -r requirements.txt
 ```
 
-### Run as MCP Server
+### Run the MCP
 
 ```bash
 python -m src.server
@@ -89,7 +89,7 @@ pytest
 
 This project is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
 
-Any modifications or derivative works must be shared under the same license. If you run a modified version of this server as a network service, you must make the source code available to users of that service.
+Any modifications or derivative works must be shared under the same license. If you run a modified version as a network service, you must make the source code available to users of that service.
 
 Dual licensing available on request — see [NOTICE](NOTICE).
 
