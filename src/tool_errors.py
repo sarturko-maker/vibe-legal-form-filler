@@ -48,7 +48,7 @@ USAGE: dict[str, str] = {
     ),
     "verify_output": (
         'verify_output(file_path="filled.docx", expected_answers=[{"pair_id": '
-        '"q1", "xpath": "/w:body/...", "expected_text": "Acme Corp"}])'
+        '"q1", "expected_text": "Acme Corp"}])'
     ),
 }
 
@@ -388,14 +388,25 @@ def _build_relaxed_payloads(
 
 # ── ExpectedAnswer (verify_output) wrapper ───────────────────────────────────
 
-_EXPECTED_REQUIRED = ("pair_id", "xpath", "expected_text")
+_EXPECTED_REQUIRED = ("pair_id", "expected_text")
 
 
 def validate_expected_answers(
     expected_answers: list[dict],
-) -> list[ExpectedAnswer]:
-    """Build ExpectedAnswer list with rich errors on validation failure."""
-    results: list[ExpectedAnswer] = []
+    ft: FileType | None = None,
+    file_bytes: bytes | None = None,
+) -> tuple[list[ExpectedAnswer], list[str], list[str | None]]:
+    """Build ExpectedAnswer list with rich errors on validation failure.
+
+    When ft and file_bytes are provided, resolves pair_ids to xpaths and
+    cross-checks agent-provided xpaths against resolved xpaths. Returns
+    (answers, warnings, resolved_from_list).
+
+    When ft and file_bytes are both None (backward-compatible call), xpath
+    is required, no resolution is performed, and resolved_from_list is
+    all-None.
+    """
+    # Required-field check
     for i, a in enumerate(expected_answers):
         received = sorted(a.keys())
         missing = [f for f in _EXPECTED_REQUIRED if f not in a]
@@ -404,23 +415,106 @@ def validate_expected_answers(
                 f"verify_output validation error in expected_answers[{i}]:\n"
                 f"  Received keys: {received}\n"
                 f"  Missing required: {missing}\n"
-                f"  Required: pair_id (str), xpath (str), "
-                f"expected_text (str)\n"
-                f"  Optional: confidence (str, default 'known') "
+                f"  Required: pair_id (str), expected_text (str)\n"
+                f"  Optional: xpath (str), confidence (str, default 'known') "
                 f"— valid: {enum_values(Confidence)}\n"
                 f"  Example: {USAGE['verify_output']}"
             )
+
+    # Backward-compatible: no resolution when ft/file_bytes not provided
+    if ft is None or file_bytes is None:
+        # xpath is required in backward-compatible mode
+        for i, a in enumerate(expected_answers):
+            if not a.get("xpath"):
+                received = sorted(a.keys())
+                raise ValueError(
+                    f"verify_output validation error in expected_answers[{i}]:\n"
+                    f"  Received keys: {received}\n"
+                    f"  Missing required: ['xpath']\n"
+                    f"  Required: pair_id (str), expected_text (str)\n"
+                    f"  Optional: xpath (str), confidence (str, default 'known') "
+                    f"— valid: {enum_values(Confidence)}\n"
+                    f"  Example: {USAGE['verify_output']}"
+                )
+        results: list[ExpectedAnswer] = []
+        for i, a in enumerate(expected_answers):
+            try:
+                results.append(ExpectedAnswer(**a))
+            except Exception as exc:
+                received = sorted(a.keys())
+                raise ValueError(
+                    f"verify_output validation error in expected_answers[{i}]:\n"
+                    f"  Received keys: {received}\n"
+                    f"  Error: {exc}\n"
+                    f"  Required: pair_id (str), expected_text (str)\n"
+                    f"  Optional: xpath (str), confidence (str, default 'known') "
+                    f"— valid: {enum_values(Confidence)}\n"
+                    f"  Example: {USAGE['verify_output']}"
+                ) from exc
+        return results, [], [None] * len(results)
+
+    # Resolution path: resolve pair_ids and cross-check xpaths
+    needs_resolution = any(not a.get("xpath") and a.get("pair_id") for a in expected_answers)
+    needs_cross_check = any(a.get("xpath") and a.get("pair_id") for a in expected_answers)
+
+    resolved: dict[str, str] = {}
+    warnings: list[str] = []
+
+    if needs_resolution or needs_cross_check:
+        pair_ids = [a["pair_id"] for a in expected_answers if a.get("pair_id")]
+        if ft in (FileType.EXCEL, FileType.PDF):
+            # Relaxed path: pair_id IS the element ID (no re-extraction)
+            resolved = {pid: pid for pid in pair_ids}
+        else:
+            # Word path: re-extract to resolve pair_ids to xpaths
+            from src.pair_id_resolver import resolve_pair_ids, cross_check_xpaths
+            resolved = resolve_pair_ids(file_bytes, ft, pair_ids)
+            warnings = cross_check_xpaths(expected_answers, resolved)
+
+    # Build ExpectedAnswer with resolved xpaths
+    results = []
+    resolved_from_list: list[str | None] = []
+    for i, a in enumerate(expected_answers):
+        pair_id = a.get("pair_id", "")
+        xpath = a.get("xpath")
+
+        if not xpath and pair_id:
+            # Resolve from pair_id
+            xpath = resolved.get(pair_id)
+            if not xpath and ft in (FileType.EXCEL, FileType.PDF):
+                # Identity fallback for Excel/PDF
+                xpath = pair_id
+            if not xpath:
+                raise ValueError(
+                    f"verify_output error: pair_id '{pair_id}' could not be "
+                    f"resolved to an xpath. Re-extract with "
+                    f"extract_structure_compact to get current IDs."
+                )
+            resolved_from_list.append("pair_id")
+        elif xpath and pair_id in resolved and resolved[pair_id] != xpath:
+            # Cross-check mismatch: pair_id takes precedence
+            xpath = resolved[pair_id]
+            resolved_from_list.append("pair_id")
+        elif xpath:
+            resolved_from_list.append("xpath")
+        else:
+            resolved_from_list.append(None)
+
+        # Build the answer with the resolved xpath
+        answer_kwargs = dict(a)
+        answer_kwargs["xpath"] = xpath
         try:
-            results.append(ExpectedAnswer(**a))
+            results.append(ExpectedAnswer(**answer_kwargs))
         except Exception as exc:
+            received = sorted(a.keys())
             raise ValueError(
                 f"verify_output validation error in expected_answers[{i}]:\n"
                 f"  Received keys: {received}\n"
                 f"  Error: {exc}\n"
-                f"  Required: pair_id (str), xpath (str), "
-                f"expected_text (str)\n"
-                f"  Optional: confidence (str, default 'known') "
+                f"  Required: pair_id (str), expected_text (str)\n"
+                f"  Optional: xpath (str), confidence (str, default 'known') "
                 f"— valid: {enum_values(Confidence)}\n"
                 f"  Example: {USAGE['verify_output']}"
             ) from exc
-    return results
+
+    return results, warnings, resolved_from_list

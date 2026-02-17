@@ -170,7 +170,7 @@ class ContentStatus(str, Enum):
 
 class ExpectedAnswer(BaseModel):
     pair_id: str
-    xpath: str
+    xpath: str | None = None    # optional when pair_id is provided
     expected_text: str
     confidence: Confidence = Confidence.KNOWN
 
@@ -180,6 +180,7 @@ class ContentResult(BaseModel):
     status: ContentStatus
     expected: str
     actual: str
+    resolved_from: str | None = None  # "pair_id" or "xpath" or None
 
 
 class VerificationSummary(BaseModel):

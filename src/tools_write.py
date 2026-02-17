@@ -222,7 +222,9 @@ def verify_output(
         "verify_output",
         file_bytes_b64 or None, file_type or None, file_path or None,
     )
-    answers = validate_expected_answers(expected_answers)
+    answers, warnings, resolved_from_list = validate_expected_answers(
+        expected_answers
+    )
 
     if ft == FileType.WORD:
         return word_verify_output(raw, answers).model_dump()
