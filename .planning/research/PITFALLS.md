@@ -1,214 +1,256 @@
 # Pitfalls Research
 
-**Domain:** MCP HTTP Transport & Cross-Platform AI Agent Integration
-**Researched:** 2026-02-16
-**Confidence:** HIGH
+**Domain:** Batch/Fast-Path Operations for MCP Form Filler Round-Trip Reduction
+**Researched:** 2026-02-17
+**Confidence:** HIGH (based on deep codebase analysis plus OOXML specification research)
 
 ## Critical Pitfalls
 
-### Pitfall 1: stdout Pollution Breaking stdio Tests
+### Pitfall 1: Formatting Extraction Divergence Between Snippet and Full Element
 
 **What goes wrong:**
-When adding HTTP transport to an existing stdio server, developers continue logging or printing diagnostic information to stdout, which corrupts the JSON-RPC message stream in stdio mode, causing all stdio tests to fail with parse errors.
+Currently `extract_formatting()` in `xml_formatting.py` receives a `target_context_xml` string -- an OOXML snippet the agent extracted or received from `validate_locations`. The function calls `_find_run_properties()` which searches: direct child rPr, first run's rPr, then pPr's rPr. If the server instead builds XML at write-time using the full element at the XPath, formatting extraction may produce different results because:
+
+1. The full element at an XPath like `./w:tbl[1]/w:tr[2]/w:tc[2]/w:p[1]` is a `<w:p>` containing zero or more runs. An empty cell's paragraph has NO runs and NO rPr -- `extract_formatting()` returns `{}` (no formatting).
+2. But the same empty cell's *parent* `<w:tc>` may have `<w:tcPr>` with formatting, or the table style may apply conditional formatting. The current snippet-based path never sees this because the agent sends a paragraph-level snippet, not the cell.
+3. If the server reads the full element at write-time, it gets the `<w:p>` -- still no formatting. But if someone "improves" this to walk up to the parent `<w:tc>` or `<w:tbl>` to find inherited formatting, the formatting output changes for every empty cell.
 
 **Why it happens:**
-stdio transport requires that NOTHING be written to stdout except valid MCP messages. HTTP transport is more forgiving—stdout can be used freely since messages go over HTTP. Developers test HTTP mode first, see their debug prints working fine, then existing stdio tests break mysteriously.
+OOXML has a 5-level style hierarchy: document defaults -> table style -> numbering -> paragraph style -> direct formatting. The current system only extracts direct formatting (level 5) from whatever snippet the agent provides. This is consistent and correct for the current design. The danger is that when moving formatting extraction server-side during write, someone resolves more of the hierarchy "to be more correct," producing different output than the current path and breaking backward compatibility.
 
 **How to avoid:**
-- Before adding HTTP transport, audit all code paths for stdout usage (print statements, logging.info with StreamHandler, etc.)
-- Redirect ALL logs to stderr: `logging.basicConfig(stream=sys.stderr)`
-- In Python FastMCP: use structured logging to stderr ONLY
-- Add a pre-commit hook: `grep -r "print(" python/` to catch new print statements
-- Document in contribution guidelines: "NEVER use stdout directly"
+- The fast-path formatting extraction MUST use the exact same `_find_run_properties()` logic from `xml_formatting.py`. Do not "improve" it by walking up the element tree.
+- Scope the extraction to the same element boundary: if the XPath points to a `<w:p>`, extract from that `<w:p>` only, not its parent `<w:tc>`.
+- Add a comparison test: for every answer in a fixture document, run both paths (agent snippet path and server fast-path) and assert identical `insertion_xml` output. Any divergence is a bug in the fast path.
+- Document explicitly: "Formatting extraction reads only direct rPr from the target element. Style inheritance is intentionally not resolved."
 
 **Warning signs:**
-- Stdio tests pass locally but fail in CI after HTTP work
-- Error messages like "Invalid JSON-RPC message" or "unexpected character at position 0"
-- Tests fail only when verbose logging is enabled
-- Message parsing works initially then breaks after innocent "debug print" commits
+- Previously empty-cell answers had no formatting (plain text), but after the change they suddenly inherit the table's font/size
+- `verify_output` starts reporting mismatches on formatting-sensitive comparisons
+- Tests pass but real-world documents show answers in different fonts than before
+- The fast-path produces `<w:rPr>` elements where the old path produced none (or vice versa)
 
 **Phase to address:**
-Phase 1: Transport Setup (pre-implementation checklist)
+Phase 1: Fast-path implementation (formatting extraction parity tests)
 
 ---
 
-### Pitfall 2: Missing Accept Header Causing 406 Errors
+### Pitfall 2: Structured Answer Type Cannot Be Collapsed
 
 **What goes wrong:**
-MCP servers strictly enforce the Accept header requirement. Clients that don't send `Accept: application/json, text/event-stream` receive HTTP 406 Not Acceptable errors. This breaks cross-platform compatibility with clients like Gemini CLI or Antigravity that may use different header configurations.
+When designing the batch/fast-path, a developer sees that `build_insertion_xml` for `plain_text` can be folded into `write_answers` (server reads element at XPath, extracts formatting, builds run XML, inserts it). They then try to also fold `structured` answers the same way. But `structured` answers are fundamentally different: the agent provides raw OOXML, the server only validates it. There is no formatting to extract and no XML to build -- the agent IS the builder. Folding structured answers into the fast path would mean the agent stops providing XML, which removes a capability.
+
+Even worse: the agent using compact extraction (element IDs like `T1-R2-C1`) typically does NOT have `target_context_xml` available. They have an element ID and an answer string. The fast path is designed exactly for this case: `{element_id, answer_text}` -> server resolves XPath, extracts formatting, builds XML, writes. But if someone conflates this with the structured path, the API becomes confused about who owns XML construction.
 
 **Why it happens:**
-The MCP spec mandates both content types in the Accept header for POST requests. Many HTTP clients default to `Accept: */*` or `Accept: application/json` only. SDK version 1.25.x+ introduced strict validation that rejects wildcards and single content types. Python SDK and TypeScript SDK implementations differ in strictness.
+The two answer types share a function name (`build_insertion_xml`) which suggests they are variations of the same operation. In reality they are opposite operations: one is "server builds XML" and the other is "server validates agent-built XML." Collapsing them into one batch call without understanding this distinction breaks the structured path.
 
 **How to avoid:**
-- Client-side: Always send `Accept: application/json, text/event-stream` for POST to /mcp endpoint
-- Server-side: For localhost-only v1, consider accepting wildcards (`*/*`, `application/*`) per HTTP/1.1 spec (RFC 7231)
-- Test with multiple clients (Claude Code, Gemini CLI, Antigravity) BEFORE declaring compatibility
-- Add integration tests that verify header handling with different Accept values
-- Document required headers in README with examples for curl/httpie/requests library
+- The batch/fast-path API should explicitly support only `plain_text` answers. Structured answers continue to use the existing per-item `build_insertion_xml` tool.
+- In the batch request model, include an `answer_type` field with a clear error if someone passes `structured` without `insertion_xml`.
+- Document: "The fast path handles plain_text answers only. For structured answers (checkboxes, complex formatting), use build_insertion_xml separately."
+- Consider allowing a hybrid batch: most answers are `{element_id, answer_text}` (fast path) but some can be `{element_id, insertion_xml}` (pre-built, skip formatting extraction).
 
 **Warning signs:**
-- Works with Claude Code but fails with Gemini CLI
-- HTTP 406 errors in logs
-- "Not Acceptable" responses during initialization
-- Client reports "connection refused" but server shows 406 in access logs
-- Works with custom test client but fails with production AI clients
+- Batch API accepts `structured` type but silently ignores agent-provided XML
+- Agent sends `answer_type: "structured"` with raw OOXML in `answer_text`, batch path treats it as plain text and double-wraps it in `<w:r>`
+- Tests only cover plain_text batch -- structured is untested and broken
+- Agent documentation says "use batch for everything" without mentioning the structured exception
 
 **Phase to address:**
-Phase 2: Protocol Implementation (header validation logic)
-Phase 4: Cross-Platform Testing (multi-client validation)
+Phase 1: API design (answer type routing in batch schema)
 
 ---
 
-### Pitfall 3: Session Management Confusion (Stateful vs Stateless)
+### Pitfall 3: Element ID to XPath Resolution Parses Document Twice
 
 **What goes wrong:**
-Server implements stateful sessions with `Mcp-Session-Id` but then tries to scale horizontally with load balancing. Requests from the same client hit different server instances, which don't recognize the session ID, returning HTTP 404 Not Found. Client enters initialization loop, repeatedly creating new sessions.
+The current `validate_locations` already re-runs `extract_structure_compact` (which parses the full .docx) when any element ID is present, to get the `id_to_xpath` mapping. If `write_answers` also needs to resolve element IDs to XPaths and extract formatting from the elements at those XPaths, the document gets parsed three times for a typical fast-path flow: once in `validate_locations`, once to resolve IDs in `write_answers`, and once more to locate elements for formatting extraction. For a 50-answer form, this adds seconds of overhead that defeats the purpose of reducing round-trips.
 
 **Why it happens:**
-stdio transport has implicit session management (one process per client). HTTP requires explicit choice: stateful (session IDs + sticky routing) or stateless (no session IDs, each request independent). Developers default to stateful because it "feels like stdio" but forget about deployment implications.
+The server is stateless -- each tool call re-reads the document from bytes. This is correct and intentional for the current per-item pipeline. But when consolidating multiple steps into one batch call, the stateless design means you must either: (a) parse once and pass the tree through internally, or (b) accept redundant parsing.
 
 **How to avoid:**
-- For localhost-only v1: Skip session management entirely (stateless=True in FastMCP)
-- If you implement sessions: Add LOUD warning in deployment docs about sticky sessions requirement
-- Use `stateless_http=True` in FastMCP unless you have specific session requirements
-- Test with 2+ server instances behind nginx/caddy to verify session handling breaks without sticky routing
-- Document: "This server is stateless. Each request is independent. No session affinity needed."
+- The batch `write_answers` call should parse the document once, build the `id_to_xpath` mapping once, and resolve all elements in a single tree walk.
+- Do NOT add state between tool calls (e.g., caching parsed trees across MCP calls). Keep stateless design.
+- Instead, make the batch call internally efficient: parse .docx -> build xpath map -> for each answer: resolve xpath, find element, extract rPr, build run XML, insert -> repackage once.
+- The separate `validate_locations` call becomes optional for the fast path -- the batch `write_answers` validates as it writes and reports failures per-answer in the response.
 
 **Warning signs:**
-- Works in development (single server) but fails in production (load balanced)
-- Intermittent "Session not found" errors
-- Client repeatedly re-initializes
-- Session IDs in logs but no session storage backend
-- Server generates `Mcp-Session-Id` header but doesn't validate it on subsequent requests
-- "Works 50% of the time" reports from users (round-robin hitting session-aware vs fresh instances)
+- Large forms (50+ answers) take 10+ seconds for `write_answers` when the old per-item path took 3 seconds total
+- CPU profiling shows 80% time in ZIP decompression and XML parsing, not in actual insertion
+- Memory spikes from holding multiple copies of the same parsed tree
 
 **Phase to address:**
-Phase 1: Transport Setup (architecture decision: stateful vs stateless)
-Phase 3: Deployment Configuration (if stateful, add sticky session docs)
+Phase 1: Implementation (single-parse architecture for batch write)
 
 ---
 
-### Pitfall 4: Base64 Encoding Mismatch for Binary Files
+### Pitfall 4: xml:space="preserve" Dropped in Server-Built XML for Edge Cases
 
 **What goes wrong:**
-Server encodes binary file data with `base64.urlsafe_b64encode()` (Python MCP SDK default) but client validator expects standard base64. Files decode correctly for small files but fail validation with "Invalid base64" errors for larger files containing `+` or `/` characters (which urlsafe converts to `-` and `_`).
+The current `build_run_xml()` in `xml_formatting.py` correctly sets `xml:space="preserve"` when the text has leading or trailing spaces (line 194). But the check is `if text and (text[0] == " " or text[-1] == " ")`. This misses edge cases:
+
+1. Text that is entirely whitespace (e.g., a single space " " used as a cell separator) -- this passes the check but is an unusual case worth testing.
+2. Tab characters or other whitespace -- OOXML converts non-space whitespace in `<w:t>` to spaces, but tabs should use `<w:tab/>` elements instead.
+3. Newline characters in answer text -- should be split into multiple runs with `<w:br/>` elements, not embedded as `\n` in a single `<w:t>`.
+4. Empty string answers -- `text` is falsy, so `xml:space` is not set, but an empty `<w:t/>` is still valid OOXML.
+
+When the server builds XML at write-time instead of the agent calling `build_insertion_xml`, the agent may send answers with embedded newlines or tabs that the current `build_run_xml()` does not handle. Currently the agent sees the `build_insertion_xml` response and can adjust; in the fast path, the server silently writes malformed content.
 
 **Why it happens:**
-Python MCP SDK's BlobResourceContents uses `base64.urlsafe_b64encode()` for encoding but standard base64 validation for decoding. The spec doesn't explicitly require URL-safe encoding, but the Python SDK implementation assumes it. Only surfaces on larger binary files because small files are less likely to contain characters that differ between standard and URL-safe encoding.
+The current `build_run_xml()` was designed for single-line plain text answers. The agent controlled what text it sent and could pre-process it. Moving XML construction server-side means the server must handle all text edge cases because the agent no longer has a chance to inspect the result before it is written.
 
 **How to avoid:**
-- For file_bytes_b64 input: Accept BOTH standard and URL-safe base64 (decode wrapper that tries both)
-- For file_bytes_b64 output: Use standard base64.b64encode(), not urlsafe variant
-- Add test case with binary file containing `+/` characters (e.g., image file > 1KB)
-- Document in tool descriptions: "Binary data must be standard base64 encoded"
-- Validate encoding in CI: decode sample files to verify no validation errors
+- Add text normalization to the fast-path XML builder: split on `\n` to create `<w:br/>` elements, convert `\t` to `<w:tab/>`, handle empty strings gracefully.
+- Add tests for: `" "` (single space), `"Line1\nLine2"` (embedded newline), `"\t"` (tab), `""` (empty), `"  leading spaces"`, `"trailing spaces  "`.
+- The normalization should live in a helper function that both `build_run_xml()` and the fast-path builder share, so behavior is identical.
+- Do NOT change existing `build_run_xml()` behavior for backward compatibility -- add a new internal helper that the fast path uses.
 
 **Warning signs:**
-- Small files (< 1KB) work but larger files fail
-- Error message mentions "Invalid base64" or character encoding
-- Works with text files but fails with images/PDFs
-- Validation passes in one SDK but fails in another (Python SDK vs TypeScript SDK)
-- Base64 string length is correct but content doesn't decode
+- Answers with newlines appear as literal `\n` text in the Word document instead of line breaks
+- Tabs appear as spaces in the output document
+- Leading/trailing spaces disappear from answers
+- `verify_output` shows mismatches because the expected text has spaces but the actual text does not
 
 **Phase to address:**
-Phase 2: Protocol Implementation (base64 encoding/decoding wrapper)
-Phase 4: Cross-Platform Testing (test with multiple SDKs)
+Phase 1: XML builder enhancement (text normalization for server-side construction)
 
 ---
 
-### Pitfall 5: Protocol Version Header Mismatch
+### Pitfall 5: verify_output Text Comparison Breaks with Different XML Structure
 
 **What goes wrong:**
-Client sends `MCP-Protocol-Version: 2025-06-18` but server only supports `2024-11-05`. Server returns 400 Bad Request or silently falls back to old version. Client assumes new features (like streamable HTTP single endpoint) are available but server expects old HTTP+SSE dual-endpoint pattern. Connection fails or messages are silently dropped.
+`word_verifier.py` extracts text by iterating all `<w:t>` elements under the target element and joining with spaces. If the fast-path builds XML differently from the agent path (e.g., using multiple `<w:r>` elements where the agent path used one, or adding `<w:br/>` elements for newlines), the extracted text changes. This causes `verify_output` to report mismatches even though the document is correct.
+
+Specific failure modes:
+1. Agent path: one `<w:r>` with one `<w:t>` containing "Acme Corp". Fast path: two `<w:r>` elements (split for formatting). Verifier extracts "Acme Corp" (two `<w:t>` elements joined with space) -- matches.
+2. Agent path: `<w:t>Acme Corp</w:t>`. Fast path: `<w:t>Acme</w:t>` + `<w:t> Corp</w:t>`. Verifier extracts "Acme  Corp" (two texts joined with space, but one already has leading space) -- mismatch due to double space.
+3. Fast path adds `<w:br/>` for newlines. Verifier extracts text without the break. Expected text was "Line1\nLine2" but actual is "Line1 Line2" or "Line1Line2".
 
 **Why it happens:**
-Protocol version negotiation happens during initialization via JSON-RPC, but HTTP transport ALSO requires `MCP-Protocol-Version` header on every request. Developers implement one but not the other. Clients may send header before version negotiation completes. Servers may not validate header against negotiated version.
+The verifier uses a simple text extraction that concatenates `<w:t>` text with space separators. This works when XML structure is predictable (one `<w:r>` per answer, as the agent typically produces). When the server builds XML with different structure, the text extraction algorithm produces different strings even for semantically identical content.
 
 **How to avoid:**
-- Server: Validate `MCP-Protocol-Version` header on ALL HTTP requests after initialization
-- Server: Return 400 Bad Request with clear error message: "Unsupported protocol version: X. Server supports: Y."
-- Server: If missing header and no negotiation yet, assume 2025-03-26 per spec fallback
-- Client: Store negotiated version after initialization, send it in header on all subsequent requests
-- Add integration test: client with mismatched version header should fail gracefully with clear error
-- Log protocol version mismatches at ERROR level with both client and server versions
+- Update `_extract_text()` in `word_verifier.py` to normalize whitespace: collapse multiple spaces to one, trim, and handle `<w:br/>` as newline.
+- OR: keep the verifier unchanged but ensure the fast-path XML builder produces structurally identical output to `build_run_xml()` -- same number of `<w:r>` and `<w:t>` elements.
+- Add regression tests: write an answer via the old path, verify. Write the same answer via the fast path, verify. Both must produce identical verification results.
+- The safest approach is both: normalize the verifier AND ensure structural parity in the builder.
 
 **Warning signs:**
-- "Connection Error" with no details
-- Works with Claude Code but fails with older clients
-- Server logs show 400 Bad Request for initialization
-- Client repeatedly retries initialization
-- Features work inconsistently (SSE sometimes streams, sometimes returns single JSON)
-- No version header in client HTTP requests
+- `verify_output` reports `mismatched` for answers that are visually correct in the document
+- Mismatch rate increases with the fast path but not with the old path
+- Mismatches correlate with specific text patterns (spaces, newlines, special characters)
 
 **Phase to address:**
-Phase 2: Protocol Implementation (version validation middleware)
-Phase 4: Cross-Platform Testing (test with clients on different protocol versions)
+Phase 1: Verification parity tests (run both paths, compare verify_output results)
 
 ---
 
-### Pitfall 6: SSE Stream Disconnection Without Resumability
+### Pitfall 6: Agent Behavioral Assumption -- build_insertion_xml Returns Are Inspectable
 
 **What goes wrong:**
-During long-running tool execution (e.g., processing large document), SSE stream disconnects due to network timeout or proxy timeout. Server continues processing, returns response on closed stream. Client never receives result, thinks request timed out, retries from scratch. Server processes same request twice.
+In the current pipeline, agents call `build_insertion_xml` and receive the insertion XML in the response. Some agents inspect this response to verify it looks correct before passing it to `write_answers`. For example, an agent might check that the font name matches expectations, or that the text content is correct. In the fast path, the agent never sees the insertion XML -- it sends `{element_id, answer_text}` and gets back a filled document. The "inspect before write" pattern is eliminated.
+
+If the agent's workflow depends on inspecting insertion XML (e.g., to retry with different formatting, or to log what was inserted), the fast path removes this capability without the agent realizing it. The agent silently loses its quality control step.
 
 **Why it happens:**
-SSE is persistent HTTP connection—proxies, load balancers, and clients all have timeout limits (often 60s). Streamable HTTP spec supports resumability via `Last-Event-ID` header but most servers don't implement it. Developers test with fast operations (< 5s) so never encounter disconnection during processing.
+The fast path is designed to reduce round-trips: fewer calls means faster execution. But each round-trip was also a synchronization point where the agent could make decisions. Removing the synchronization point removes the decision point.
 
 **How to avoid:**
-- For v1 localhost: Document timeout limits clearly (60s default)
-- Add connection keepalive: Send SSE comment (`: ping\n\n`) every 15s to prevent proxy timeout
-- Implement idempotency: Tool calls with same args within 5min return cached result instead of re-processing
-- Add request ID to tool call, server caches results by ID for 5min
-- OR: Don't use SSE for long operations—return 202 Accepted immediately, provide status endpoint
-- Test with artificial 90s delay to verify disconnection behavior
+- The batch `write_answers` response should include per-answer details: `{pair_id, status, insertion_xml_used, formatting_extracted}`. This gives agents the same information they would have gotten from individual `build_insertion_xml` calls, just after the fact instead of before.
+- Document the behavioral change: "The fast path writes answers directly. Agents that need to inspect insertion XML before writing should continue using the per-item build_insertion_xml -> write_answers flow."
+- Keep the per-item path fully functional. The fast path is an optimization, not a replacement.
+- Never deprecate `build_insertion_xml` -- agents with complex formatting requirements need it.
 
 **Warning signs:**
-- "Request timeout" errors but server logs show successful completion
-- Same tool called multiple times with identical args
-- Works in local testing but fails in production behind proxy
-- Client shows spinner forever even though server finished
-- No SSE keepalive comments in stream dump
-- Load balancer logs show 504 Gateway Timeout for long requests
+- Agents that previously worked correctly start producing documents with wrong formatting after switching to the fast path
+- Agent logs show "skipping formatting check" or "insertion XML not available"
+- Agent prompts that say "verify the XML looks correct before writing" become dead code
 
 **Phase to address:**
-Phase 2: Protocol Implementation (SSE keepalive middleware)
-Phase 3: Deployment Configuration (document timeout limits)
+Phase 1: API design (response schema includes per-answer insertion details)
 
 ---
 
-### Pitfall 7: Testing Only Happy Path, Not Transport-Specific Failures
+### Pitfall 7: Batch Write Partial Failure Leaves Document in Inconsistent State
 
 **What goes wrong:**
-All 172 existing tests pass. You add HTTP transport. Tests still pass (they use stdio in-memory mode). Deploy to production. HTTP clients encounter Content-Type errors, missing CORS headers, session ID validation issues. None were caught by tests.
+In the current per-item pipeline, each `write_answers` call processes all answers in a single XML tree manipulation and repackages the ZIP once. If any answer's XPath is invalid, the entire call fails with a `ValueError` before any modifications. But the fast path adds more failure points: element ID resolution (ID not found), formatting extraction (element has unexpected structure), and XML building (text normalization edge case). If answer 25 out of 50 fails after answers 1-24 have already been applied to the in-memory XML tree, the caller gets an error but no document -- all 24 successful insertions are lost.
 
 **Why it happens:**
-FastMCP's test utilities default to in-memory stdio mode for speed. Tests don't exercise actual HTTP server, HTTP headers, CORS, session management, or network-level failures. Test coverage metrics show 100% but it's testing stdio code paths, not HTTP code paths.
+The current `_apply_answer()` in `word_writer.py` validates the XPath first (`_validate_xpath`) and then does the insertion, but validation and insertion happen sequentially per answer in the `for answer in answers` loop. If answer 3 validates and is applied but answer 4 fails, the partially-modified tree is discarded when the exception propagates. This is the existing behavior, but the fast path makes it worse because there are additional failure modes beyond XPath validation: element ID not found in mapping, formatting extraction failure, and text normalization errors. More failure modes means partial application is more likely.
 
 **How to avoid:**
-- Add dedicated HTTP transport test suite (separate from stdio tests)
-- Use `StreamableHttpTransport` in tests, not in-memory stdio
-- Start actual HTTP server with `run_server_in_process` fixture
-- Test specific HTTP failure modes:
-  - Missing Accept header → 406 error
-  - Missing MCP-Protocol-Version header → 400 error
-  - Invalid session ID → 404 error
-  - Malformed JSON-RPC → 400 error with error response
-  - Disconnection during SSE stream → graceful handling
-- Test with real HTTP client (httpx/requests), not test client
-- Mark as integration tests (slower, but critical for HTTP transport)
+- Validate ALL answers before applying ANY. Phase 1: resolve all element IDs to XPaths, validate all XPaths, extract all formatting. Phase 2: apply all insertions. If phase 1 fails for any answer, report all failures without modifying the document.
+- Return per-answer status in the response: `{pair_id: "success"}` or `{pair_id: "failed", error: "Element ID T99-R1-C1 not found"}`.
+- For partial failure, offer a choice: `on_error: "abort"` (default, fail the entire batch) or `on_error: "skip"` (skip failed answers, write successful ones, report which failed).
+- The `verify_output` step already exists to catch post-write issues. Document: "Always run verify_output after batch write, especially when using on_error: skip."
 
 **Warning signs:**
-- All tests pass but production HTTP clients fail
-- Test suite runs in < 5s (means no real HTTP server startup)
-- No tests importing `StreamableHttpTransport` or `httpx`
-- Test coverage high but no HTTP-specific assertions
-- Tests mock HTTP behavior instead of testing real transport
-- No tests for HTTP status codes, headers, or CORS
+- Agent calls batch write with 50 answers, 1 has a bad element ID, entire call fails, no document returned
+- Agent retries the entire batch after fixing the one bad answer, wasting time
+- No way to know which answer caused the failure without reading the error message carefully
+- Agent logs show repeated "write_answers failed" with different error messages each time (because each retry fixes one error but reveals the next)
 
 **Phase to address:**
-Phase 2: Protocol Implementation (add HTTP integration tests)
-Phase 4: Cross-Platform Testing (test with real AI clients)
+Phase 1: Error handling design (two-phase validate-then-apply, per-answer status reporting)
+
+---
+
+### Pitfall 8: Compact Extraction Agent Has No target_context_xml
+
+**What goes wrong:**
+The `build_insertion_xml` MCP tool requires `target_context_xml` -- an XML snippet showing the target element's formatting. Agents using `extract_structure_compact` get element IDs and human-readable text, NOT XML snippets. They would need to also call `extract_structure` (the raw XML endpoint) to get XML context, which defeats the purpose of compact extraction.
+
+When designing the fast path, this gap is the entire reason the fast path exists: agents using compact extraction cannot call `build_insertion_xml` without an extra round-trip to get XML context. But if the fast-path design does not properly handle this, developers might add a "get context XML for element ID" tool, adding a round-trip instead of eliminating one.
+
+**Why it happens:**
+The compact extraction was designed to keep agents away from raw XML. The pipeline was: compact extraction -> validate by ID -> build XML (requires context) -> write. Step 3 creates a problem because the agent needs XML context it does not have. The "correct" solution is to move step 3 into step 4: write_answers accepts element IDs and answer text, builds XML internally.
+
+**How to avoid:**
+- The batch `write_answers` must accept element IDs directly: `{element_id: "T1-R2-C2", answer_text: "Acme Corp"}`. The server resolves the ID to XPath, finds the element, extracts formatting, builds XML, and inserts -- all in one call.
+- Do NOT add a new tool like `get_element_context(element_id) -> xml`. This adds a round-trip instead of removing one.
+- The `id_to_xpath` mapping from compact extraction is the bridge: element ID -> XPath -> locate element in tree -> extract formatting. This must all happen inside `write_answers`.
+- Keep `build_insertion_xml` available for agents that need it (those using raw extraction or structured answers). Do not remove it.
+
+**Warning signs:**
+- A new MCP tool is proposed that returns XML context for an element ID
+- Agent flow gains a step instead of losing one after the "optimization"
+- Agents are told to call `extract_structure` alongside `extract_structure_compact` to get context XML
+- The batch write tool still requires `insertion_xml` as a parameter (means nothing was collapsed)
+
+**Phase to address:**
+Phase 1: API design (batch write accepts element_id + answer_text, resolves internally)
+
+---
+
+### Pitfall 9: Multi-Run Formatting in Target Element Produces Ambiguous Inheritance
+
+**What goes wrong:**
+`_find_run_properties()` in `xml_formatting.py` finds the FIRST run's `<w:rPr>` when the element is a paragraph. But many real-world document cells have multiple runs with different formatting: a bold label followed by a normal-weight placeholder, or mixed font sizes. The first run's formatting is not necessarily the "answer formatting" -- often the answer should match the second run (the placeholder text's formatting), not the first (the label's formatting).
+
+Example: A cell containing `<w:r><w:rPr><w:b/></w:rPr><w:t>Name: </w:t></w:r><w:r><w:t>[Enter here]</w:t></w:r>`. The first run is bold (it is the label). The second run is not bold (it is the placeholder). `_find_run_properties()` returns bold formatting, so the answer "Acme Corp" is inserted in bold -- wrong.
+
+This is NOT a new bug -- it exists in the current pipeline too. But moving formatting extraction server-side makes it the server's problem instead of the agent's. An agent using the current path could inspect the insertion XML, see it was bold, and adjust. With the fast path, the bold formatting is silently applied.
+
+**Why it happens:**
+`_find_run_properties()` picks the first run as a reasonable default. It has no way to know which run represents the "answer formatting" without understanding the semantic structure of the document.
+
+**How to avoid:**
+- For the fast path, prefer the LAST run's formatting when the target paragraph has multiple runs. The last run is more likely to be the placeholder or empty text that the answer replaces.
+- Better: if the target element is being cleared (replace_content mode), extract formatting from the last non-empty run, or from the run containing placeholder text.
+- Add a heuristic: if any run contains placeholder text (matching `PLACEHOLDER_RE`), use that run's formatting.
+- Add test fixtures with multi-run cells (bold label + normal placeholder) and verify the answer inherits the placeholder's formatting, not the label's.
+- Document this as a known limitation with the specific heuristic used, so future developers do not "fix" it in a way that breaks other cases.
+
+**Warning signs:**
+- Answers appear bold/italic when they should not be
+- Formatting differs between answers in different parts of the same form
+- Agent-provided answers looked right (agent chose not to inherit formatting), but fast-path answers look wrong (server inherited the wrong run's formatting)
+
+**Phase to address:**
+Phase 1: Formatting extraction enhancement (multi-run heuristic)
 
 ---
 
@@ -216,135 +258,103 @@ Phase 4: Cross-Platform Testing (test with real AI clients)
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Skipping session management | Faster v1 implementation, simpler server | Can't add later without breaking clients, no horizontal scaling | **Acceptable for localhost-only v1** |
-| Using `Access-Control-Allow-Origin: *` | Works immediately with all clients | Security vulnerability for local servers, DNS rebinding attack vector | **Never acceptable**, use specific origin or localhost only |
-| Accepting wildcard Accept headers | Broader client compatibility | Not strictly spec-compliant, may break with strict future clients | **Acceptable for v1** if documented |
-| Not implementing SSE resumability | Simpler server, faster iteration | Client retry storms on disconnection, wasted computation | **Acceptable for v1** with documented timeout limits |
-| Mixing stdio and HTTP logging patterns | Easier debugging during migration | Breaks stdio mode silently, hard to track down | **Never acceptable** |
-| Skipping Content-Type validation | Permissive server, fewer client errors | Accepts invalid payloads, harder to debug client issues | **Acceptable in development only** |
+| Keeping both per-item and batch paths indefinitely | No migration risk, full backward compat | Two code paths to maintain, potential drift in behavior | **Always acceptable** -- structured answers require the per-item path, so both paths are architecturally necessary |
+| Batch write resolves IDs internally without separate validation | Fewer round-trips | Loss of explicit validation step; errors reported at write time instead of validation time | **Acceptable for v1** if per-answer status reporting is thorough |
+| Single-run formatting extraction (first or last run heuristic) | Simple implementation, predictable behavior | Wrong formatting for multi-run cells (bold labels, mixed formatting) | **Acceptable for v1** with documented limitation |
+| Not resolving OOXML style hierarchy (document defaults, table styles) | Consistent with current behavior, simpler code | Answers in styled documents may lack expected formatting (e.g., document default font not applied) | **Acceptable indefinitely** -- resolving the full hierarchy is a massive undertaking for marginal benefit |
+| Skipping formatting extraction for empty cells (returning no rPr) | Correct per OOXML spec -- empty cells have no direct formatting | Answer text in empty cells uses Word's default rendering, which may differ from the question cell | **Acceptable** -- this is correct behavior; "fixing" it by guessing formatting would be worse |
 
 ## Integration Gotchas
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| Gemini CLI | Assuming same behavior as Claude Code | Test explicitly—Gemini sends different Accept headers, may not support SSE |
-| Antigravity | Not testing MCP config installation flow | Verify full setup flow in Antigravity IDE, not just API calls |
-| FastMCP + FastAPI | Mounting http_app breaks FastAPI TestClient | Separate test suites: stdio tests with in-memory, HTTP tests with real server |
-| Chromebook Crostini | Binding to 127.0.0.1, expecting browser access | Use 0.0.0.0 or penguin.linux.test domain, enable port forwarding in ChromeOS settings |
-| Load balancers | Assuming sticky sessions work by default | Explicitly configure cookie-based session affinity OR use stateless mode |
-| Reverse proxies (nginx/caddy) | Not forwarding MCP headers | Preserve `Mcp-Session-Id` and `MCP-Protocol-Version` headers in proxy config |
+| Agent switching from per-item to batch | Sending `structured` answers in batch call expecting server to handle them | Batch handles `plain_text` only; `structured` answers must still use `build_insertion_xml` separately |
+| Agent using compact extraction | Assuming `id_to_xpath` mapping from extraction remains valid after document modification | Always use the ORIGINAL document's `id_to_xpath`; XPaths may shift after insertions if element indices change |
+| Agent skipping `validate_locations` in fast path | Relying on batch write to catch bad IDs at write time | Batch write should validate all IDs before modifying any content; but agents should still validate early for better UX |
+| Agent providing answers with newlines | Expecting `\n` in answer text to become line breaks in the document | Fast path must convert `\n` to `<w:br/>` elements; document this in tool description |
+| Agent providing HTML entities in answers | Expecting `&amp;`, `&lt;` to be rendered as literal characters | Server must handle XML escaping; `lxml` does this automatically when setting `.text`, but if text is embedded in an XML string it must be escaped |
 
 ## Performance Traps
 
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| Blocking tool execution in HTTP handler | Server handles only 1 request at a time, clients timeout waiting | Use async tools, run CPU-intensive work in thread pool | > 2 concurrent clients |
-| No SSE keepalive | Clients disconnect silently after 60s | Send comment every 15s: `: ping\n\n` | Any operation > 60s |
-| Re-encoding base64 on every request | High CPU usage, slow responses for binary files | Cache decoded bytes, decode once on upload | Files > 1MB |
-| Not streaming large responses | Client receives nothing until complete, appears frozen | Stream results as SSE events during processing | Responses > 100KB |
-| Synchronous HTTP transport in FastMCP | Blocks event loop, can't handle concurrent requests | Use async HTTP client (httpx.AsyncClient), async tool functions | > 5 concurrent clients |
-| Large file in file_bytes_b64 | Request body > 100MB, server OOM | Use file_path parameter, read/write to disk; OR stream via resource URIs | Files > 10MB |
+| Parsing .docx ZIP for each answer in a batch | Linear slowdown with answer count; 50 answers = 50 ZIP reads | Parse once, operate on in-memory tree, repackage once | > 10 answers |
+| Re-running compact extraction inside write_answers to get id_to_xpath | Additional 200ms+ per call for document parsing and tree walking | Accept id_to_xpath as a parameter OR build it once internally | > 20 answers |
+| Building xpath mapping for ALL elements when only some are needed | O(n) walk of entire document tree when only 5 answers need resolving | Build a lookup for only the requested element IDs using targeted XPath | > 100 elements in document |
+| Serializing entire modified XML tree per-answer for debugging | Log output grows quadratically with document size and answer count | Log only element ID, answer text, and status per answer; serialize tree only on error | > 50KB document |
 
 ## Security Mistakes
 
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| Not validating Origin header | DNS rebinding attack—remote website accesses local MCP server | Validate Origin, reject non-localhost origins for local servers |
-| Binding to 0.0.0.0 by default | Server accessible from network, even if intended localhost-only | Default to 127.0.0.1, require explicit flag for 0.0.0.0 |
-| No authentication on HTTP transport | Anyone on network can call tools | For v1 localhost: acceptable; for network: require token in header |
-| Wildcard CORS (`Access-Control-Allow-Origin: *`) | Any website can call server, CSRF attacks | Use specific origin or no CORS (localhost-only doesn't need CORS) |
-| Logging sensitive file contents | file_bytes_b64 contains private data, logs expose it | Truncate logs: `log.info(f"Processing file, size: {len(data)}")` not `log.info(data)` |
-| No rate limiting | Client can DoS server with rapid tool calls | For localhost v1: acceptable; for network: implement rate limiting (10 req/min) |
+| Accepting arbitrary XPath in batch write without validation | XPath injection: agent-provided XPath could evaluate functions, access document properties, or cause DoS via recursive expressions | Continue using `_XPATH_SAFE_RE` validation; apply it to resolved XPaths from element IDs too |
+| Trusting element IDs without re-validating against current document | Stale IDs from a previous extraction could point to wrong elements if document was modified between extraction and write | Always re-parse document and verify XPath resolves to an element; never cache resolved elements across tool calls |
+| Allowing batch write with uncapped answer count | Memory exhaustion: agent sends 10,000 answers for a 50-cell document | Enforce existing `MAX_ANSWERS` limit in batch path; return clear error |
 
 ## UX Pitfalls
 
 | Pitfall | User Impact | Better Approach |
 |---------|-------------|-----------------|
-| Generic "Connection Error" message | User doesn't know if it's network, auth, or version mismatch | Return detailed error: "Server requires MCP protocol version 2025-06-18 but client uses 2024-11-05" |
-| No progress indication for long operations | User thinks server hung, cancels and retries | Stream progress events via SSE: `data: {"progress": 0.5, "status": "Processing page 50/100"}` |
-| Silent failure when session expires | Client sends request, gets 404, no explanation | Return error response: "Session expired. Please reconnect." |
-| Timeout without hint about operation cost | "Request timed out" after 60s but operation needs 5min | During initialization, advertise timeout: `"capabilities": {"timeout_seconds": 60}` |
-| No indication of transport mode | User doesn't know if stdio or HTTP is active | Log at startup: "MCP server listening on http://127.0.0.1:8000/mcp (Streamable HTTP transport)" |
+| Silent formatting difference between per-item and batch paths | User compares documents filled via different paths and gets confused by formatting differences | Ensure parity tests pass; if parity is impossible, document the difference |
+| Batch write error message says "XPath not found" without identifying which answer | Agent cannot tell user which question failed; user must re-run entire batch | Per-answer status in response: `{pair_id: "q17", status: "failed", error: "Element T5-R3-C2 not found"}` |
+| No progress indication for large batches | Agent appears to hang during a 50-answer batch write | Not applicable for synchronous MCP calls; but response should include timing info and answer count for agent to report |
+| Agent told to "use batch for everything" | Agent tries to batch structured answers and gets cryptic errors | Tool description clearly states batch is for plain_text answers only |
 
 ## "Looks Done But Isn't" Checklist
 
-- [ ] **HTTP Transport**: Tests pass but only test stdio mode—add `StreamableHttpTransport` integration tests
-- [ ] **Session Management**: Server generates session IDs but doesn't validate them on subsequent requests
-- [ ] **CORS Headers**: Added `Access-Control-Allow-Origin` but not `Access-Control-Allow-Headers` (breaks preflight)
-- [ ] **Protocol Version**: Server parses header but doesn't validate it against supported versions
-- [ ] **SSE Streaming**: Returns SSE content-type but doesn't send keepalive, breaks on long operations
-- [ ] **Error Responses**: Returns HTTP error codes but no JSON-RPC error body (client can't parse error)
-- [ ] **Base64 Validation**: Accepts base64 input but doesn't validate length/padding (fails on decode)
-- [ ] **Tool Idempotency**: Implements retry logic but same request ID causes duplicate processing
-- [ ] **Graceful Shutdown**: Closes server but doesn't wait for in-flight requests (truncated responses)
-- [ ] **Cross-Platform Testing**: Works with Claude Code but never tested with Gemini CLI or Antigravity
-- [ ] **Chromebook Networking**: Binds to 127.0.0.1 but Crostini browser can't access it (needs penguin.linux.test)
-- [ ] **Documentation**: README says "supports HTTP" but doesn't document endpoint URL, headers, or limitations
+- [ ] **Formatting parity:** Both paths produce identical insertion XML for the same answer and target -- verify with a comparison test that runs all fixture answers through both paths
+- [ ] **Empty cell handling:** Fast path correctly produces unformatted `<w:r>` for empty cells (no rPr) -- verify with empty cell fixtures
+- [ ] **xml:space="preserve":** Fast path sets it for leading/trailing spaces -- verify with `" Acme "` and `"  "` test cases
+- [ ] **Structured answer rejection:** Fast path returns clear error when answer_type is "structured" -- verify with explicit test
+- [ ] **Partial failure:** Fast path reports all failing answers before modifying any content -- verify with a batch where answers 2 and 4 have bad IDs
+- [ ] **Existing tests:** All 234 existing tests still pass after adding the fast path -- verify by running full test suite
+- [ ] **Multi-run cells:** Fast path extracts formatting from the correct run in multi-run cells -- verify with bold-label + normal-placeholder fixture
+- [ ] **Newline handling:** Fast path converts `\n` to `<w:br/>` elements -- verify with multi-line answer text
+- [ ] **verify_output compatibility:** verify_output produces identical results for documents filled via either path -- verify with same answer set written via both paths
+- [ ] **Per-item path still works:** `build_insertion_xml` and per-answer `write_answers` continue to function identically -- verify existing pipeline tests pass unchanged
 
 ## Recovery Strategies
 
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| stdout pollution | LOW | 1. Redirect logging to stderr in all modules. 2. Add pre-commit hook. 3. Re-run stdio tests to verify. |
-| Missing Accept header | LOW | 1. Update client to send both content types. 2. Add header validation test. 3. Deploy client update. |
-| Session management confusion | MEDIUM | 1. Choose stateless or stateful. 2. If stateful: add session storage + sticky routing. 3. Update docs. 4. Add load balancer config example. |
-| Base64 mismatch | LOW | 1. Standardize on base64.b64encode(). 2. Add decode wrapper accepting both. 3. Add test with large binary file. |
-| Protocol version mismatch | LOW | 1. Add version validation middleware. 2. Return clear error message. 3. Log both client and server versions. |
-| SSE disconnection | MEDIUM | 1. Add SSE keepalive (15s interval). 2. Implement idempotency with request ID. 3. Document timeout limits. |
-| No HTTP integration tests | MEDIUM | 1. Create HTTP test suite with real server. 2. Test failure modes (406, 400, 404). 3. Add to CI. Est: 4-6 hours. |
-| CORS misconfiguration | LOW | 1. Remove wildcard origin. 2. Add origin validation. 3. Test with browser client. 4. Update CORS headers for preflight. |
-| Chromebook networking | LOW | 1. Change bind address to 0.0.0.0. 2. Use penguin.linux.test URL. 3. Enable port forwarding in ChromeOS. 4. Document in README. |
-| Breaking existing tests | HIGH | 1. Isolate stdio tests from HTTP changes. 2. Add transport-specific test suites. 3. Verify 172 tests still pass. 4. Add HTTP tests separately. Est: 8-12 hours. |
+| Formatting divergence between paths | MEDIUM | 1. Add comparison test (both paths, same input). 2. Find divergence. 3. Fix fast path to match old path. 4. Re-run fixture tests. |
+| Structured answer mishandled in batch | LOW | 1. Add answer_type validation to batch entry point. 2. Return error for structured. 3. Add test. |
+| Document parsed multiple times | LOW | 1. Refactor to single-parse architecture. 2. Profile before/after with 50-answer batch. 3. Verify 3x+ speedup. |
+| xml:space dropped for edge cases | LOW | 1. Add test cases for space edge cases. 2. Fix `build_run_xml` or fast-path builder. 3. Verify verify_output passes. |
+| verify_output text extraction mismatch | MEDIUM | 1. Normalize whitespace in `_extract_text()`. 2. Handle `<w:br/>` as newline. 3. Collapse double spaces. 4. Re-run all verification tests. |
+| Agent loses inspect-before-write capability | LOW | 1. Add per-answer `insertion_xml_used` to batch response. 2. Document behavioral change. |
+| Partial failure destroys successful insertions | MEDIUM | 1. Add validate-all-before-apply-any pattern. 2. Return per-answer status. 3. Add skip-on-error option. |
+| Multi-run formatting picks wrong run | MEDIUM | 1. Change heuristic to prefer last run or placeholder run. 2. Add multi-run fixture tests. 3. Document heuristic. |
+| Stale element IDs from modified document | LOW | 1. Always re-parse document in write_answers (already the case). 2. Verify XPath resolves before applying. 3. Return "not found" error per answer. |
 
 ## Pitfall-to-Phase Mapping
 
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| stdout pollution | Phase 1: Transport Setup | Run existing 172 stdio tests—all must pass |
-| Missing Accept header | Phase 2: Protocol Implementation | Test with curl: send invalid Accept → 406 error |
-| Session management confusion | Phase 1: Transport Setup | Document stateless mode, add test with 2 server instances |
-| Base64 mismatch | Phase 2: Protocol Implementation | Test with 5MB binary file (image), verify decode succeeds |
-| Protocol version mismatch | Phase 2: Protocol Implementation | Send wrong version header → 400 error with clear message |
-| SSE disconnection | Phase 2: Protocol Implementation | Test with 90s operation, verify keepalive prevents disconnect |
-| No HTTP integration tests | Phase 2: Protocol Implementation | Add HTTP test suite, verify 100% pass, run in CI |
-| CORS misconfiguration | Phase 3: Deployment Configuration | Test from browser, verify preflight succeeds |
-| Chromebook networking | Phase 3: Deployment Configuration | Test from ChromeOS browser with penguin.linux.test |
-| Breaking existing tests | Phase 2: Protocol Implementation | CI gate: all 172 tests must pass before merge |
-| Gemini CLI compatibility | Phase 4: Cross-Platform Testing | Connect from Gemini CLI, call tool, verify response |
-| Antigravity compatibility | Phase 4: Cross-Platform Testing | Install MCP config in Antigravity, verify tool execution |
+| Formatting divergence (#1) | Phase 1: Implementation | Comparison test: both paths produce identical insertion XML for all fixture answers |
+| Structured answer conflation (#2) | Phase 1: API design | Test: batch call with structured answer returns error, per-item path still works |
+| Double document parsing (#3) | Phase 1: Implementation | Profile: batch write for 50 answers completes in < 1 second |
+| xml:space edge cases (#4) | Phase 1: XML builder | Tests: space-only text, newlines, tabs, empty string all produce correct OOXML |
+| verify_output text mismatch (#5) | Phase 1: Verification | Test: same answer set written via both paths produces identical verify_output results |
+| Lost inspect-before-write (#6) | Phase 1: API design | Test: batch response includes `insertion_xml_used` for each answer |
+| Partial failure (#7) | Phase 1: Error handling | Test: batch with 2 bad IDs out of 10 returns all 2 errors without modifying document |
+| No target_context_xml for compact agents (#8) | Phase 1: API design | Test: batch write accepts element_id + answer_text, produces correct document |
+| Multi-run formatting (#9) | Phase 1: Formatting extraction | Test: cell with bold label + normal placeholder, answer inherits normal formatting |
 
 ## Sources
 
-- [Implementing MCP: Tips, Tricks and Pitfalls | Nearform](https://nearform.com/digital-community/implementing-model-context-protocol-mcp-tips-tricks-and-pitfalls/)
-- [MCP Transports Specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)
-- [Exploring the Future of MCP Transports](http://blog.modelcontextprotocol.io/posts/2025-12-19-mcp-transport-future/)
-- [MCP Server Transports: STDIO, Streamable HTTP & SSE | Roo Code](https://docs.roocode.com/features/mcp/server-transports)
-- [One MCP Server, Two Transports: STDIO and HTTP | Microsoft Tech Community](https://techcommunity.microsoft.com/blog/azuredevcommunityblog/one-mcp-server-two-transports-stdio-and-http/4443915)
-- [MCP Transport Protocols: stdio vs SSE vs StreamableHTTP | MCPcat](https://mcpcat.io/guides/comparing-stdio-sse-streamablehttp/)
-- [FastMCP Running Your Server](https://gofastmcp.com/deployment/running-server)
-- [Building StreamableHTTP MCP Servers - Production Guide | MCPcat](https://mcpcat.io/guides/building-streamablehttp-mcp-server/)
-- [FastMCP HTTP Deployment](https://gofastmcp.com/deployment/http)
-- [Managing Stateful MCP Server Sessions | CodeSignal](https://codesignal.com/learn/courses/developing-and-integrating-an-mcp-server-in-typescript/lessons/stateful-mcp-server-sessions)
-- [State, and long-lived vs. short-lived connections | MCP Discussion](https://github.com/modelcontextprotocol/modelcontextprotocol/discussions/102)
-- [Authentication and Authorization in MCP | Stack Overflow Blog](https://stackoverflow.blog/2026/01/21/is-that-allowed-authentication-and-authorization-in-model-context-protocol)
-- [The MCP Ecosystem Has a Security Problem | Medium](https://medium.com/@debusinha2009/the-mcp-ecosystem-has-a-security-problem-c2f585a5bb05)
-- [CORS Policies for Web-Based MCP Servers | MCPcat](https://mcpcat.io/guides/implementing-cors-policies-web-based-mcp-servers/)
-- [MCP Base64 Encode/Decode Mismatch | GitHub Issue](https://github.com/modelcontextprotocol/python-sdk/issues/342)
-- [Issue with HTTP Request Context Access in MCP | GitHub Issue](https://github.com/jlowin/fastmcp/issues/1233)
-- [FastMCP Tests Documentation](https://gofastmcp.com/development/tests)
-- [Port Forwarding | ChromeOS.dev](https://chromeos.dev/en/web-environment/port-forwarding)
-- [Accessing Ports Between Crostini and ChromeOS – Coder.Haus](https://coder.haus/2019/03/11/accessing-ports-between-crostini-and-chromeos/)
-- [Fix MCP Error -32001: Request Timeout | MCPcat](https://mcpcat.io/guides/fixing-mcp-error-32001-request-timeout/)
-- [Error Handling in MCP Servers - Best Practices | MCPcat](https://mcpcat.io/guides/error-handling-custom-mcp-servers/)
-- [Resilient AI Agents With MCP: Timeout And Retry Strategies | Octopus](https://octopus.com/blog/mcp-timeout-retry)
-- [SSE Protocol Best Practices - MCP Server Documentation](https://mcp-cloud.ai/docs/sse-protocol/best-practices)
-- [Improve DX for Protocol Version Negotiation Errors | GitHub Issue](https://github.com/modelcontextprotocol/inspector/issues/962)
-- [MCP Versioning Specification](https://modelcontextprotocol.io/specification/versioning)
-- [MCP Tool Validation Fails Due to Missing Accept Header | GitHub Discussion](https://github.com/open-webui/open-webui/discussions/19568)
-- [MCP Server Won't Work with Wildcard Accept Header | GitHub Issue](https://github.com/modelcontextprotocol/python-sdk/issues/1641)
-- [FastMCP Breaks FastAPI TestClient | GitHub Issue](https://github.com/jlowin/fastmcp/issues/2375)
-- [Stop Vibe-Testing Your MCP Server | jlowin.dev](https://www.jlowin.dev/blog/stop-vibe-testing-mcp-servers)
+- [OOXML Style Hierarchy](https://c-rex.net/samples/ooxml/e1/Part4/OOXML_P4_DOCX_Style_topic_ID0ECYKT.html) -- resolution order for formatting properties
+- [OOXML Style Inheritance](https://c-rex.net/samples/ooxml/e1/Part4/OOXML_P4_DOCX_Style_topic_ID0EITKT.html) -- basedOn chains and toggle property behavior
+- [OOXML Document Defaults](https://c-rex.net/samples/ooxml/e1/part4/OOXML_P4_DOCX_docDefaults_topic_ID0EQQTT.html) -- docDefaults applied first in hierarchy
+- [OpenXML Style Inheritance Challenges](http://james.newtonking.com/archive/2008/01/09/openxml-document-style-inheritance) -- developer experience with formatting edge cases
+- [OOXML rPr Specification](https://c-rex.net/samples/ooxml/e1/part4/OOXML_P4_DOCX_rPr_topic_ID0EEHTO.html) -- run properties element definition
+- [xml:space="preserve" in WordML](http://www.jenitennison.com/2007/07/13/things-that-make-me-scream-xmlspacepreserve-in-wordml.html) -- whitespace handling edge cases in OOXML
+- [OOXML Styles Overview](http://officeopenxml.com/WPstyles.php) -- comprehensive style system documentation
+- [MCP Batching Removed in 2025-06-18](https://www.speakeasy.com/mcp/release-notes) -- JSON-RPC batching removed from protocol; optimization must happen at tool level
+- [Backward Compatibility in APIs](https://google.aip.dev/180) -- Google's API improvement proposal on backward compatibility principles
+- [Zalando REST API Compatibility Guidelines](https://github.com/zalando/restful-api-guidelines/blob/main/chapters/compatibility.adoc) -- adding fields and maintaining backward compat
+- Codebase analysis: `src/xml_formatting.py`, `src/handlers/word_writer.py`, `src/handlers/word_verifier.py`, `src/handlers/word_indexer.py`, `src/handlers/word.py`, `src/tools_extract.py`, `src/models.py`
 
 ---
-*Pitfalls research for: MCP HTTP Transport & Cross-Platform AI Agent Integration*
-*Researched: 2026-02-16*
+*Pitfalls research for: Batch/Fast-Path Operations for MCP Form Filler Round-Trip Reduction*
+*Researched: 2026-02-17*

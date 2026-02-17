@@ -1,501 +1,542 @@
-# Architecture Research: Dual-Transport MCP Servers
+# Architecture Research: Round-Trip Reduction for Word Form Filling
 
-**Domain:** MCP server with stdio and HTTP transport
-**Researched:** 2026-02-16
-**Confidence:** HIGH
+**Domain:** MCP round-trip elimination for OOXML insertion
+**Researched:** 2026-02-17
+**Confidence:** HIGH (based on direct codebase analysis, no external dependencies)
 
-## Standard Architecture
+## Problem Statement
 
-### System Overview
+Currently, the agent calls `build_insertion_xml` once per answer to convert plain text into OOXML. For a 50-question form, that is 50 extra MCP round-trips. Each round-trip includes serialization overhead, agent context consumption, and latency. The insight: `word_writer.py` already opens the document and navigates to the XPath target during `write_answers` -- it could extract formatting and build the insertion XML at that point, eliminating all `build_insertion_xml` calls.
 
-The Model Context Protocol ecosystem uses a **transport-agnostic core with swappable transport layers**. The same MCP server logic can be exposed via different transports selected at runtime, without changing the business logic.
+## Three Approaches Analyzed
+
+### Approach A: Fast Path in `write_answers` (Recommended)
+
+Allow `AnswerPayload` to carry `answer_text` instead of `insertion_xml`. When `word_writer._apply_answer()` finds `answer_text` (and no `insertion_xml`), it extracts formatting from the target element and builds the run XML inline.
+
+### Approach B: Batch `build_insertion_xml`
+
+Add a new MCP tool `build_insertion_xml_batch` that takes an array of `{answer_text, target_context_xml, answer_type}` and returns an array of `{insertion_xml, valid}`. Reduces N calls to 1 call, but agent still needs target_context_xml for each answer.
+
+### Approach C: Collapse Build Into Write Step
+
+Remove `build_insertion_xml` entirely, make `write_answers` the sole entry point that accepts plain text and handles everything. No backward compatibility -- old callers break.
+
+## Recommendation: Approach A (Fast Path)
+
+Approach A gives the biggest win with the smallest change and full backward compatibility. Here is the detailed integration analysis.
+
+---
+
+## Approach A: Detailed Integration Plan
+
+### Current Data Flow (Before)
+
+```
+Agent                          MCP Server
+  |                               |
+  |-- extract_structure_compact ->|  (1 call)
+  |<- compact_text, id_to_xpath --|
+  |                               |
+  |-- validate_locations -------->|  (1 call)
+  |<- xpaths --------------------|
+  |                               |
+  |-- build_insertion_xml(q1) --->|  (N calls, one per answer)
+  |<- insertion_xml_1 ------------|
+  |-- build_insertion_xml(q2) --->|
+  |<- insertion_xml_2 ------------|
+  |   ... (N-2 more) ...         |
+  |                               |
+  |-- write_answers ------------->|  (1 call)
+  |<- filled_docx_bytes ---------|
+  |                               |
+  |-- verify_output ------------->|  (1 call)
+  |<- verification_report -------|
+```
+
+**Total: 3 + N calls** (where N = number of answers, typically 20-80)
+
+### New Data Flow (After)
+
+```
+Agent                          MCP Server
+  |                               |
+  |-- extract_structure_compact ->|  (1 call)
+  |<- compact_text, id_to_xpath --|
+  |                               |
+  |-- validate_locations -------->|  (1 call)
+  |<- xpaths --------------------|
+  |                               |
+  |-- write_answers ------------->|  (1 call, answers carry answer_text)
+  |   (word_writer extracts       |
+  |    formatting from target,    |
+  |    builds XML inline)         |
+  |<- filled_docx_bytes ---------|
+  |                               |
+  |-- verify_output ------------->|  (1 call)
+  |<- verification_report -------|
+```
+
+**Total: 4 calls** (constant, regardless of answer count)
+
+### Changes Required by File
+
+#### 1. `src/models.py` (4 lines added, 0 lines changed)
+
+Add `answer_text` as an optional field to `AnswerPayload`:
+
+```python
+class AnswerPayload(BaseModel):
+    pair_id: str
+    xpath: str
+    insertion_xml: str = ""      # CHANGE: default to empty string
+    answer_text: str = ""        # NEW: plain text answer (fast path)
+    mode: InsertionMode
+    confidence: Confidence = Confidence.KNOWN
+```
+
+**Key design decision:** Both `insertion_xml` and `answer_text` are optional (default empty). Exactly one must be non-empty. This preserves backward compatibility: existing callers that send `insertion_xml` work unchanged. New callers send `answer_text` instead.
+
+**Validation rule:** If both are empty, raise ValueError. If both are non-empty, `insertion_xml` takes precedence (explicit XML wins over auto-formatting). This is validated in `word_writer.py`, not in the model, because the model is shared across Word/Excel/PDF and the rule is Word-specific.
+
+#### 2. `src/handlers/word_writer.py` (~25 lines added, 3 lines changed)
+
+This is the core change. `_apply_answer()` currently receives pre-built `insertion_xml`. With the fast path, it needs to build the XML when `answer_text` is provided instead.
+
+**New function: `_build_insertion_xml_from_target()`**
+
+```python
+def _build_insertion_xml_from_target(
+    target: etree._Element, answer_text: str
+) -> str:
+    """Extract formatting from target element and build insertion XML.
+
+    Reads the run properties (font, size, style) from the target's first
+    run or paragraph properties, then wraps answer_text in a <w:r> with
+    those properties. This is the same logic as build_insertion_xml but
+    operates on the live DOM element instead of a serialized XML string.
+    """
+    rpr = _find_run_properties(target)
+    formatting = _extract_formatting_from_rpr(rpr) if rpr is not None else {}
+    return build_run_xml(answer_text, formatting)
+```
+
+**Modified function: `_apply_answer()`**
+
+```python
+def _apply_answer(body: etree._Element, answer: AnswerPayload) -> None:
+    """Locate a single answer's target by XPath and insert its content."""
+    _validate_xpath(answer.xpath)
+    matched = body.xpath(answer.xpath, namespaces=NAMESPACES)
+    if not matched:
+        raise ValueError(
+            f"XPath '{answer.xpath}' for pair_id '{answer.pair_id}' "
+            f"did not match any element in the document"
+        )
+    target = matched[0]
+
+    # Fast path: build insertion XML from target formatting
+    insertion_xml = answer.insertion_xml
+    if not insertion_xml and answer.answer_text:
+        insertion_xml = _build_insertion_xml_from_target(
+            target, answer.answer_text
+        )
+    elif not insertion_xml and not answer.answer_text:
+        raise ValueError(
+            f"Answer '{answer.pair_id}' has neither insertion_xml "
+            f"nor answer_text"
+        )
+
+    if answer.mode == InsertionMode.REPLACE_CONTENT:
+        _replace_content(target, insertion_xml)
+    elif answer.mode == InsertionMode.APPEND:
+        _append_content(target, insertion_xml)
+    elif answer.mode == InsertionMode.REPLACE_PLACEHOLDER:
+        _replace_placeholder(target, insertion_xml)
+```
+
+**Import additions to word_writer.py:**
+
+```python
+from src.xml_formatting import (
+    build_run_xml,
+    _find_run_properties,     # Need to expose or duplicate
+)
+```
+
+**Problem:** `_find_run_properties` in `xml_formatting.py` currently takes a parsed element from a serialized XML string. In the fast path, we have the live DOM element already. The function's logic is identical -- it searches for `w:rPr` in the element tree. It works directly on `etree._Element`, so it can be reused without changes. However, it is currently a private function (underscore prefix).
+
+**Solution:** Either:
+1. Make `_find_run_properties` public (rename to `find_run_properties`) -- cleanest.
+2. Add a new function to `xml_formatting.py` that takes an element and returns a formatting dict directly: `extract_formatting_from_element(elem: etree._Element) -> dict`.
+
+Option 2 is better because it encapsulates the two-step process (find rPr, then extract properties) into a single public function.
+
+#### 3. `src/xml_formatting.py` (~10 lines added)
+
+Add a new public function that takes a live DOM element instead of a serialized string:
+
+```python
+def extract_formatting_from_element(elem: etree._Element) -> dict:
+    """Extract run-level formatting from a live DOM element.
+
+    Same logic as extract_formatting() but operates on an already-parsed
+    lxml element instead of an XML string. Used by word_writer.py's fast
+    path to avoid re-serializing and re-parsing the target element.
+    """
+    rpr = _find_run_properties(elem)
+    if rpr is None:
+        return {}
+
+    formatting: dict = {}
+    formatting.update(_extract_font_properties(rpr))
+    formatting.update(_extract_size_and_color(rpr))
+    formatting.update(_extract_style_properties(rpr))
+    return formatting
+```
+
+This is 12 lines. `xml_formatting.py` is currently 198 lines, so adding this would push it slightly over 200. To stay under the limit, the new function could replace `extract_formatting()` and `extract_formatting()` could become a thin wrapper:
+
+```python
+def extract_formatting(element_xml: str) -> dict:
+    """Extract run-level formatting from an OOXML element string."""
+    elem = _parse_element_xml(element_xml)
+    return extract_formatting_from_element(elem)
+```
+
+This actually reduces duplication.
+
+#### 4. `src/tool_errors.py` (~8 lines changed)
+
+Update `_build_word_payloads()` to accept the new `answer_text` field:
+
+```python
+_WORD_REQUIRED = ("pair_id", "xpath", "mode")          # CHANGE: remove insertion_xml
+_WORD_OPTIONAL = ("confidence", "insertion_xml", "answer_text")  # CHANGE: both optional
+_ALL_KNOWN_FIELDS = {*_WORD_REQUIRED, *_WORD_OPTIONAL}
+```
+
+Add validation that at least one of `insertion_xml` or `answer_text` is provided:
+
+```python
+def _build_word_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
+    """Word requires pair_id, xpath, mode, and one of insertion_xml or answer_text."""
+    results: list[AnswerPayload] = []
+    for i, a in enumerate(answer_dicts):
+        # ... existing key validation ...
+
+        has_xml = bool(a.get("insertion_xml"))
+        has_text = bool(a.get("answer_text"))
+        if not has_xml and not has_text:
+            raise ValueError(
+                f"write_answers validation error in answers[{i}]:\n"
+                f"  Must provide either 'insertion_xml' or 'answer_text'.\n"
+                f"  'answer_text' is preferred (server builds XML automatically)."
+            )
+        # ... rest of existing logic ...
+```
+
+Update USAGE examples to show the new fast-path usage:
+
+```python
+USAGE["write_answers"] = (
+    'write_answers(file_path="form.docx", answers=[{"pair_id": "q1", '
+    '"xpath": "/w:body/...", "answer_text": "Acme Corp", '
+    '"mode": "replace_content"}])'
+)
+```
+
+#### 5. `src/tools_write.py` (0 lines changed)
+
+No changes needed. The MCP tool function is already a thin wrapper. It passes the answer dicts through to `build_answer_payloads()` which builds `AnswerPayload` objects. The new `answer_text` field flows through automatically because Pydantic accepts extra fields defined on the model.
+
+#### 6. `src/handlers/word.py` (0 lines changed)
+
+No changes needed. `write_answers()` already delegates directly to `word_writer.write_answers()`.
+
+#### 7. `src/tools_extract.py` (0 lines changed)
+
+`build_insertion_xml` remains available. No changes needed. Agents that want to pre-build XML can still call it.
+
+### Files NOT Changed
+
+| File | Why Unchanged |
+|------|---------------|
+| `src/server.py` | Entry point -- no business logic |
+| `src/mcp_app.py` | FastMCP singleton -- no business logic |
+| `src/xml_validation.py` | Only validates structured XML -- not used in fast path |
+| `src/xml_snippet_matching.py` | Snippet matching unrelated to insertion |
+| `src/validators.py` | File input validation -- no answer-level logic |
+| `src/handlers/word_parser.py` | XML extraction -- unchanged |
+| `src/handlers/word_indexer.py` | Compact extraction -- unchanged |
+| `src/handlers/word_location_validator.py` | Location validation -- unchanged |
+| `src/handlers/word_fields.py` | Form field detection -- unchanged |
+| `src/handlers/word_verifier.py` | Post-write verification -- unchanged |
+| All Excel handlers | Excel does not use insertion XML |
+| All PDF handlers | PDF does not use insertion XML |
+
+### Backward Compatibility
+
+**Full backward compatibility. Zero breaking changes.**
+
+- Old callers that send `insertion_xml` continue to work -- it is still the default code path
+- Old callers that omit `answer_text` see no difference -- `answer_text` defaults to `""`
+- `build_insertion_xml` MCP tool remains available -- agents can call it if they want
+- `AnswerPayload` with `insertion_xml` still validates correctly
+- `tool_errors.py` validation accepts either field
+- Tests that use `insertion_xml` continue passing unchanged
+
+**Migration path for agents:** Replace `build_insertion_xml` calls with `answer_text` in the answer payload. Agents can migrate one answer at a time -- mix `insertion_xml` and `answer_text` answers in the same `write_answers` call.
+
+### New Test Cases Needed
+
+```
+tests/test_word.py (or new tests/test_word_fast_path.py):
+
+1. test_fast_path_plain_text_inherits_formatting
+   - Send answer_text="Acme Corp" to a cell with Arial 24pt bold
+   - Verify output has the answer text with inherited formatting
+
+2. test_fast_path_no_formatting_target
+   - Send answer_text to a target with no rPr
+   - Verify output has plain text (no formatting applied)
+
+3. test_fast_path_replace_content_preserves_tcPr
+   - Same as existing test but using answer_text instead of insertion_xml
+
+4. test_fast_path_append_mode
+   - Send answer_text with mode=append
+
+5. test_fast_path_replace_placeholder_mode
+   - Send answer_text with mode=replace_placeholder
+
+6. test_fast_path_mixed_with_insertion_xml
+   - Some answers use answer_text, others use insertion_xml, in same call
+
+7. test_insertion_xml_takes_precedence
+   - Send both answer_text and insertion_xml -- insertion_xml wins
+
+8. test_neither_answer_text_nor_insertion_xml_raises
+   - Send empty for both -- ValueError
+
+9. test_fast_path_produces_same_output_as_build_insertion_xml
+   - For the same answer, verify fast path output matches
+     build_insertion_xml + write_answers output byte-for-byte
+```
+
+### Build Order
+
+**Step 1: `xml_formatting.py`** -- Add `extract_formatting_from_element()`
+- No dependencies on other changes
+- Existing `extract_formatting()` can call it internally (refactor)
+- Testable independently
+
+**Step 2: `models.py`** -- Add `answer_text` field to `AnswerPayload`
+- No dependencies on Step 1
+- All existing tests still pass (field has default value)
+- Can run in parallel with Step 1
+
+**Step 3: `word_writer.py`** -- Add fast path in `_apply_answer()`
+- Depends on Step 1 (needs `extract_formatting_from_element`)
+- Depends on Step 2 (needs `answer_text` on AnswerPayload)
+- Core logic change
+
+**Step 4: `tool_errors.py`** -- Update validation for new field
+- Depends on Step 2 (needs `answer_text` field to exist)
+- Can run in parallel with Step 3
+
+**Step 5: Tests** -- Add fast path test cases
+- Depends on Steps 1-4
+- Must verify backward compatibility and new behavior
+
+**Step 6: CLAUDE.md** -- Update documentation
+- Update pipeline description to mention fast path
+- Update agent guidance to recommend `answer_text` over `build_insertion_xml`
+- Update `write_answers` tool description to document `answer_text` field
+
+```
+Step 1: xml_formatting.py ─┐
+                           ├─> Step 3: word_writer.py ──> Step 5: Tests
+Step 2: models.py ─────────┤                                    │
+                           └─> Step 4: tool_errors.py ──────────┘
+                                                          Step 6: Docs
+```
+
+---
+
+## Approach B Analysis: Batch `build_insertion_xml`
+
+### What Changes
+
+Add a new MCP tool `build_insertion_xml_batch`:
+
+```python
+@mcp.tool()
+def build_insertion_xml_batch(
+    items: list[dict],  # [{answer_text, target_context_xml, answer_type}]
+) -> dict:
+    """Build insertion XML for multiple answers in one call."""
+    results = []
+    for item in items:
+        result = word_handler.build_insertion_xml(
+            BuildInsertionXmlRequest(**item)
+        )
+        results.append(result.model_dump())
+    return {"results": results}
+```
+
+### Why Not Recommended
+
+1. **Still requires `target_context_xml`**: The agent must still extract and send the XML context for each answer target. This data is already available inside `word_writer.py` during the write step -- passing it through the agent is redundant work.
+
+2. **Reduces round-trips but not agent context consumption**: The agent still needs to hold N `target_context_xml` strings plus N `insertion_xml` results in its context window.
+
+3. **Only reduces N calls to 2 calls** (batch build + write), not to 0 extra calls. Approach A eliminates the entire build step.
+
+4. **New tool surface area**: Adding a tool means more documentation, more tests, more maintenance. Approach A adds a field to an existing tool.
+
+### When Batch Would Be Better
+
+If the fast path proves unreliable (formatting extraction from live DOM differs from extraction from serialized XML), batch is a safe fallback. But the code is identical -- `xml_formatting.py` operates on `etree._Element` objects in both cases. The serialized path just adds parse/serialize overhead.
+
+---
+
+## Approach C Analysis: Remove `build_insertion_xml`
+
+### What Changes
+
+Delete `build_insertion_xml` from `tools_extract.py`, `word.py`, and `models.py`. Make `write_answers` the only way to insert answers. Remove `insertion_xml` from `AnswerPayload`.
+
+### Why Not Recommended
+
+1. **Breaking change**: Any existing agent workflows that call `build_insertion_xml` stop working.
+
+2. **Loses structured XML support**: The current `build_insertion_xml` with `answer_type="structured"` lets agents provide custom OOXML for complex answers (checkboxes, formatted content). The fast path only handles plain text.
+
+3. **Against project convention**: CLAUDE.md says "Never change a function signature without updating all callers." Removing a tool is a more drastic change than modifying a signature.
+
+4. **No additional benefit over Approach A**: Approach A gives the same round-trip reduction (0 extra calls for plain text) while keeping the escape hatch for structured XML.
+
+---
+
+## Architecture After Approach A
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                   Transport Selection Layer                  │
-│  (Runtime decision: CLI flag, env var, or __main__ logic)   │
-├─────────────────────────────────────────────────────────────┤
+│                     MCP Tool Layer                           │
 │                                                              │
-│   ┌──────────────┐              ┌──────────────┐            │
-│   │ STDIO        │              │ HTTP         │            │
-│   │ Transport    │              │ Transport    │            │
-│   │              │              │ (Streamable) │            │
-│   └──────┬───────┘              └──────┬───────┘            │
-│          │                             │                    │
-├──────────┴─────────────────────────────┴────────────────────┤
-│                   FastMCP Server Core                        │
-│              (mcp = FastMCP("server-name"))                  │
+│  tools_extract.py                   tools_write.py           │
+│  ├── extract_structure_compact()    ├── write_answers()      │
+│  ├── extract_structure()            │   (accepts answer_text │
+│  ├── validate_locations()           │    OR insertion_xml)   │
+│  ├── build_insertion_xml()  ←KEPT   └── verify_output()      │
+│  │   (still available for                                    │
+│  │    structured XML answers)                                │
+│  └── list_form_fields()                                      │
 ├─────────────────────────────────────────────────────────────┤
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐        │
-│  │  Tool   │  │  Tool   │  │  Tool   │  │  Tool   │        │
-│  │ Module  │  │ Module  │  │ Module  │  │ Module  │        │
-│  │    1    │  │    2    │  │    3    │  │    4    │        │
-│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘        │
-│       │            │            │            │              │
-├───────┴────────────┴────────────┴────────────┴──────────────┤
-│                    Business Logic Layer                      │
-│            (handlers, validators, xml_utils, models)         │
+│                     Handler Layer                            │
+│                                                              │
+│  handlers/word.py                                            │
+│  ├── extract_structure()                                     │
+│  ├── build_insertion_xml()  ←KEPT                            │
+│  ├── write_answers()                                         │
+│  │   └── word_writer.write_answers()                         │
+│  │       └── _apply_answer()                                 │
+│  │           ├── HAS insertion_xml? → use it (old path)      │
+│  │           └── HAS answer_text?   → extract formatting     │
+│  │               from target, build XML (NEW fast path)      │
+│  └── list_form_fields()                                      │
 ├─────────────────────────────────────────────────────────────┤
-│                       External I/O                           │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐                   │
-│  │   File   │  │  OOXML   │  │  Excel   │                   │
-│  │  System  │  │  Parser  │  │  Parser  │                   │
-│  └──────────┘  └──────────┘  └──────────┘                   │
+│                     Utility Layer                            │
+│                                                              │
+│  xml_formatting.py                                           │
+│  ├── extract_formatting(xml_str)         ←existing           │
+│  ├── extract_formatting_from_element()   ←NEW                │
+│  └── build_run_xml(text, formatting)     ←existing           │
+│                                                              │
+│  xml_validation.py                                           │
+│  └── is_well_formed_ooxml()              ←unchanged          │
+├─────────────────────────────────────────────────────────────┤
+│                      Model Layer                             │
+│                                                              │
+│  models.py                                                   │
+│  └── AnswerPayload                                           │
+│      ├── pair_id: str                                        │
+│      ├── xpath: str                                          │
+│      ├── insertion_xml: str = ""         ←now optional        │
+│      ├── answer_text: str = ""           ←NEW                │
+│      ├── mode: InsertionMode                                 │
+│      └── confidence: Confidence                              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Component Responsibilities
+### Component Boundaries After Change
 
-| Component | Responsibility | Typical Implementation |
-|-----------|----------------|------------------------|
-| **Transport Layer** | Message serialization/deserialization, connection management, protocol compliance | FastMCP's built-in stdio/HTTP transports — no custom code needed |
-| **FastMCP Core** | Tool registration, routing, JSON-RPC handling | `mcp = FastMCP("name")` singleton, `@mcp.tool()` decorators |
-| **Tool Modules** | MCP tool definitions (inputs, outputs, business logic delegation) | Separate Python files per domain, each imports `mcp` and uses decorators |
-| **Business Logic** | Domain-specific work (parsing, validation, manipulation, output generation) | Pure Python functions/classes with no MCP dependencies |
-| **External I/O** | File reading/writing, XML/Excel/PDF parsing, third-party library interaction | lxml, python-docx, openpyxl, PyMuPDF |
+| Component | Responsibility | Changed? |
+|-----------|---------------|----------|
+| `tools_write.py` | MCP tool definitions for write operations | No |
+| `tools_extract.py` | MCP tool definitions for read operations | No |
+| `models.py` | Data models for all tool inputs/outputs | Yes: `answer_text` field added |
+| `word_writer.py` | XPath-based content insertion into documents | Yes: fast path added |
+| `word.py` | Word handler public API | No |
+| `xml_formatting.py` | Formatting extraction and run building | Yes: new public function |
+| `tool_errors.py` | Input validation with rich error messages | Yes: updated field requirements |
 
-## Recommended Project Structure
-
-```
-src/
-├── server.py              # Entry point — thin orchestration layer
-│                           # Imports tool modules (triggers registration)
-│                           # Calls mcp.run() with transport from CLI/env
-├── mcp_app.py             # FastMCP singleton instance
-│                           # mcp = FastMCP("server-name")
-├── tools_extract.py       # Tool module 1: extraction-related @mcp.tool()
-├── tools_write.py         # Tool module 2: write-related @mcp.tool()
-├── handlers/              # Business logic (transport-agnostic)
-│   ├── word.py            # Public API for Word operations
-│   ├── word_parser.py     # OOXML parsing logic
-│   ├── word_writer.py     # Answer insertion logic
-│   ├── excel.py           # Public API for Excel operations
-│   └── pdf.py             # Public API for PDF operations
-├── xml_utils.py           # XML manipulation helpers
-├── validators.py          # Input validation helpers
-└── models.py              # Pydantic models (shared types)
-```
-
-### Structure Rationale
-
-- **server.py:** Single entry point for all transports. Import-time registration keeps tool modules decoupled from server lifecycle.
-- **mcp_app.py:** Separate module avoids circular imports. Tool modules can import `mcp` without importing `server.py`.
-- **tools_*.py:** One file per functional domain. Keeps files under 200 lines (vibe coding constraint). Tools delegate to handlers — no business logic in tool functions.
-- **handlers/:** Pure Python, no MCP dependencies. Can be tested independently, reused in non-MCP contexts.
-- **models.py:** Single source of truth for Pydantic schemas used by tools and handlers.
-
-## Architectural Patterns
-
-### Pattern 1: Import-Time Tool Registration
-
-**What:** Tool modules use `@mcp.tool()` decorators at module level. Tools are registered when the module is imported, not when the server runs.
-
-**When to use:** When you want declarative tool definitions with minimal boilerplate. FastMCP's default pattern.
-
-**Trade-offs:**
-- ✅ Clean, concise tool definitions
-- ✅ No manual registration calls
-- ✅ Tools are discovered automatically
-- ⚠️ All tool modules must be imported before `mcp.run()`
-- ⚠️ Import order matters if tools have dependencies
-
-**Example:**
-```python
-# mcp_app.py
-from mcp.server.fastmcp import FastMCP
-mcp = FastMCP("form-filler")
-
-# tools_extract.py
-from src.mcp_app import mcp
-from src.handlers.word import extract_structure_compact as word_extract
-
-@mcp.tool()
-def extract_structure_compact(file_path: str, file_type: str = None):
-    """Extract compact indexed structure from a form document."""
-    return word_extract(file_path, file_type)
-
-# server.py
-from src.mcp_app import mcp
-from src.tools_extract import extract_structure_compact  # triggers registration
-from src.tools_write import write_answers  # triggers registration
-
-if __name__ == "__main__":
-    mcp.run()  # tools already registered
-```
-
-### Pattern 2: Runtime Transport Selection
-
-**What:** The same server.py can launch with different transports based on CLI flags or environment variables. No code changes needed to switch transports.
-
-**When to use:** When you need the same server to work locally (stdio) and remotely (HTTP) without maintaining separate entry points.
-
-**Trade-offs:**
-- ✅ Single codebase, multiple deployment modes
-- ✅ Developer can test locally with stdio, deploy with HTTP
-- ✅ No duplicate logic between transport modes
-- ⚠️ Requires runtime configuration (CLI args, env vars, or config files)
-
-**Example:**
-```python
-# server.py (Pattern A: CLI-based selection)
-import sys
-from src.mcp_app import mcp
-from src import tools_extract, tools_write  # trigger registration
-
-if __name__ == "__main__":
-    if "--http" in sys.argv:
-        mcp.run(transport="streamable-http", host="0.0.0.0", port=8080)
-    else:
-        mcp.run()  # defaults to stdio
-```
-
-**Alternative using FastMCP CLI:**
-```bash
-# The FastMCP CLI handles transport selection externally
-fastmcp run src/server.py --transport stdio
-fastmcp run src/server.py --transport streamable-http --port 8080
-```
-
-### Pattern 3: Transport-Agnostic Business Logic
-
-**What:** All domain logic lives in handler modules with no knowledge of MCP or transport mechanisms. Tool functions are thin wrappers that delegate to handlers.
-
-**When to use:** Always. This is the Dependency Inversion Principle applied to MCP servers.
-
-**Trade-offs:**
-- ✅ Business logic can be tested without MCP infrastructure
-- ✅ Logic can be reused in non-MCP contexts (scripts, other servers)
-- ✅ Tools can switch handlers (e.g., different PDF libraries) without changing MCP interface
-- ⚠️ Requires discipline to keep tool functions thin (no logic creep)
-
-**Example:**
-```python
-# handlers/word.py (pure Python, no MCP)
-def extract_structure_compact(file_bytes: bytes) -> dict:
-    """Extract compact structure. Returns dict with compact_text, id_to_xpath."""
-    # ... lxml parsing logic ...
-    return {"compact_text": text, "id_to_xpath": mapping}
-
-# tools_extract.py (thin MCP wrapper)
-from src.mcp_app import mcp
-from src.handlers.word import extract_structure_compact as handler
-from src.validators import validate_file_input
-
-@mcp.tool()
-def extract_structure_compact(file_path: str = None, file_bytes_b64: str = None):
-    """Extract compact indexed structure from a form document."""
-    file_bytes, file_type = validate_file_input(file_path, file_bytes_b64)
-    result = handler(file_bytes)  # delegate to handler
-    return result
-```
-
-## Data Flow
-
-### Request Flow (Both Transports)
+### Import Dependency Changes
 
 ```
-[Client Request]
-    ↓
-[Transport Layer] → deserializes JSON-RPC message
-    ↓
-[FastMCP Core] → routes to registered tool by name
-    ↓
-[Tool Function] → validates inputs (Pydantic)
-    ↓
-[Validator Helpers] → checks file paths, types, sizes
-    ↓
-[Handler Function] → performs business logic
-    ↓
-[External I/O] → reads files, parses XML, writes output
-    ↓
-[Handler Function] → returns structured data
-    ↓
-[Tool Function] → returns dict (FastMCP serializes to JSON)
-    ↓
-[FastMCP Core] → wraps response in JSON-RPC envelope
-    ↓
-[Transport Layer] → serializes and sends response
-    ↓
-[Client Response]
+BEFORE:
+  word_writer.py → models, xml_utils (NAMESPACES, SECURE_PARSER, parse_snippet)
+
+AFTER:
+  word_writer.py → models, xml_utils (same)
+                 → xml_formatting (extract_formatting_from_element, build_run_xml)
 ```
 
-### STDIO vs HTTP Flow Differences
+This new import is safe: `xml_formatting.py` has no handler dependencies (it only imports from `xml_snippet_matching`). The import direction flows correctly: handler -> utility.
 
-**STDIO:**
-- One process per client session
-- Client launches: `python src/server.py`
-- Process lifecycle: spawn → initialize → handle requests → exit when client disconnects
-- No concurrency within server (single client per process)
+## Edge Cases and Safety
 
-**HTTP:**
-- One persistent server process, many concurrent clients
-- Server launched once: `python src/server.py --http`
-- Process lifecycle: spawn → initialize → listen → handle concurrent requests → run indefinitely
-- Concurrency managed by uvicorn (FastMCP's underlying ASGI server)
-- Stateless tool functions critical (no shared state between requests)
+### What Happens When the Target Has No Formatting?
 
-### Key Data Flows
+The fast path extracts an empty formatting dict. `build_run_xml("text", {})` produces a bare `<w:r><w:t>text</w:t></w:r>` with no `<w:rPr>`. This is correct -- it matches what `build_insertion_xml` produces when `target_context_xml` has no formatting.
 
-1. **Tool registration flow:** tool module imports → decorator executes → FastMCP.tool() stores tool metadata → mcp.run() builds routing table
-2. **STDIO request flow:** stdin JSON → FastMCP deserializes → tool function called → result serialized → stdout JSON
-3. **HTTP request flow:** POST /mcp → FastMCP deserializes → tool function called → result serialized → HTTP response
-4. **File input flow:** file_path OR file_bytes_b64 → validator → bytes loaded → handler receives raw bytes
+### What Happens With Table Cells (w:tc)?
 
-## Scaling Considerations
+`_replace_content()` already wraps bare `<w:r>` elements in `<w:p>` when the target is a `<w:tc>`. The fast path produces a `<w:r>`, so this existing wrapping logic handles the table cell case correctly.
 
-| Scale | Architecture Adjustments |
-|-------|--------------------------|
-| **Single developer (1 user)** | STDIO only. No server infrastructure needed. Claude Desktop or CLI client launches process on demand. |
-| **Team (2-50 users)** | Add HTTP transport. Deploy on internal network or localhost. Users connect via HTTP MCP clients. Single server instance adequate. |
-| **Organization (50+ users)** | HTTP transport with load balancer. Multiple server instances behind reverse proxy. Consider request queuing for long-running tools. |
+### What About Structured Answers (Checkboxes, Complex Content)?
 
-### Scaling Priorities
+Structured answers require `answer_type="structured"` and AI-generated OOXML. These must still use `build_insertion_xml` to validate the XML, then pass `insertion_xml` to `write_answers`. The fast path only handles plain text.
 
-1. **First bottleneck:** Stateful tool functions. If tools share global state, concurrent HTTP requests will conflict. **Fix:** Make all tools stateless and idempotent.
-2. **Second bottleneck:** Large file processing in-memory. If tools load 50MB documents into RAM, multiple concurrent requests will exhaust memory. **Fix:** Stream file processing or use temp files with cleanup.
-3. **Third bottleneck:** Long-running tools blocking server. If a tool takes 30 seconds to complete, HTTP clients may timeout. **Fix:** Return task ID immediately, provide separate status-check tool.
+The agent's decision tree:
+- Plain text answer -> use `answer_text` (fast path)
+- Complex/structured answer -> call `build_insertion_xml`, use `insertion_xml` (old path)
 
-## Anti-Patterns
+In practice, 95%+ of form answers are plain text. The fast path handles the common case.
 
-### Anti-Pattern 1: Transport-Specific Logic in Tools
+### What If the Agent Sends Both `answer_text` and `insertion_xml`?
 
-**What people do:** Add `if stdio: ... else: ...` branches in tool functions based on transport type.
+`insertion_xml` takes precedence. The agent explicitly built the XML, so we respect that. This also means agents can gradually migrate: start sending `answer_text` for simple answers while keeping `insertion_xml` for complex ones.
 
-**Why it's wrong:** Violates transport abstraction. Makes tools untestable without mocking transport layer. Creates maintenance burden when adding new transports.
+## Quantified Impact
 
-**Do this instead:** Keep tools transport-agnostic. If behavior must differ, use configuration (env vars, function parameters) not transport detection.
-
-**Example (wrong):**
-```python
-@mcp.tool()
-def extract_structure(file_path: str):
-    if is_stdio_transport():
-        return full_result  # stdio can handle large responses
-    else:
-        return truncated_result  # HTTP has size limits
-```
-
-**Example (correct):**
-```python
-@mcp.tool()
-def extract_structure_compact(file_path: str):
-    """Returns compact representation suitable for any transport."""
-    return compact_result
-
-@mcp.tool()
-def extract_structure(file_path: str):
-    """Returns full representation. Client chooses based on needs."""
-    return full_result
-```
-
-### Anti-Pattern 2: Inline Tool Registration in server.py
-
-**What people do:** Define tool functions directly in server.py using decorators.
-
-**Why it's wrong:** Violates separation of concerns. server.py becomes a monolith mixing entry point logic with business logic. Hard to maintain under file size constraints (200-line vibe coding limit).
-
-**Do this instead:** Define tools in separate modules, import them in server.py to trigger registration.
-
-**Example (wrong):**
-```python
-# server.py
-from src.mcp_app import mcp
-
-@mcp.tool()
-def extract_structure(...):
-    # ... 100 lines of logic ...
-
-@mcp.tool()
-def write_answers(...):
-    # ... 150 lines of logic ...
-
-if __name__ == "__main__":
-    mcp.run()
-```
-
-**Example (correct):**
-```python
-# server.py
-from src.mcp_app import mcp
-from src.tools_extract import extract_structure  # triggers registration
-from src.tools_write import write_answers  # triggers registration
-
-if __name__ == "__main__":
-    mcp.run()
-```
-
-### Anti-Pattern 3: Hardcoded Transport Configuration
-
-**What people do:** Hardcode `mcp.run(transport="streamable-http", port=8080)` in server.py with no CLI override.
-
-**Why it's wrong:** Forces developers to edit code to switch transports. Breaks local development workflows (everyone needs HTTP setup even for testing).
-
-**Do this instead:** Accept transport configuration via CLI flags, environment variables, or default to stdio for development.
-
-**Example (wrong):**
-```python
-if __name__ == "__main__":
-    mcp.run(transport="streamable-http", port=8080)  # always HTTP
-```
-
-**Example (correct):**
-```python
-import os
-import sys
-
-if __name__ == "__main__":
-    if "--http" in sys.argv or os.getenv("MCP_TRANSPORT") == "http":
-        port = int(os.getenv("MCP_PORT", "8080"))
-        mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
-    else:
-        mcp.run()  # stdio for local dev
-```
-
-### Anti-Pattern 4: Stateful Tool Functions (Critical for HTTP)
-
-**What people do:** Store request state in module-level variables or shared objects.
-
-**Why it's wrong:** Works with stdio (1 process = 1 client) but breaks catastrophically with HTTP (1 process, many concurrent clients). Requests will see each other's state.
-
-**Do this instead:** Keep all tool functions pure and stateless. Accept all inputs as parameters, return all outputs in result. Use function-local variables only.
-
-**Example (wrong):**
-```python
-# tools_write.py
-current_document = None  # shared state!
-
-@mcp.tool()
-def load_document(file_path: str):
-    global current_document
-    current_document = parse_document(file_path)
-    return {"status": "loaded"}
-
-@mcp.tool()
-def write_answer(answer: str):
-    global current_document
-    current_document.add_answer(answer)  # uses state from previous request
-    return current_document.save()
-```
-
-**Example (correct):**
-```python
-@mcp.tool()
-def write_answers(file_path: str, answers: list):
-    """Stateless: loads document, writes answers, returns result in one call."""
-    document = parse_document(file_path)
-    for answer in answers:
-        document.add_answer(answer)
-    return document.save()
-```
-
-## Integration Points
-
-### External Services
-
-| Service | Integration Pattern | Notes |
-|---------|---------------------|-------|
-| **FastMCP library** | Import `FastMCP` class, instantiate once, use decorators | Version 2.0+ supports both stdio and streamable-http transports |
-| **uvicorn (implicit)** | FastMCP uses uvicorn internally for HTTP transport | No direct integration needed — FastMCP handles this |
-| **File system** | Pass file_path to tools, handlers read bytes with open() | Validate paths to prevent directory traversal |
-| **lxml, openpyxl, PyMuPDF** | Handlers import and use directly | Transport-agnostic — work identically under stdio and HTTP |
-
-### Internal Boundaries
-
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| **server.py ↔ tool modules** | Import (triggers registration) | One-way dependency: server imports tools, tools never import server |
-| **tool modules ↔ mcp_app** | Import shared FastMCP instance | mcp_app has zero dependencies (avoids circular imports) |
-| **tool functions ↔ handlers** | Function calls with Pydantic models | Tools validate inputs, handlers assume valid inputs |
-| **handlers ↔ xml_utils/validators** | Function calls | Handlers delegate parsing/validation to specialized utilities |
-
-## Build Order (Adding HTTP to Existing stdio Server)
-
-Given the existing project has:
-- ✅ `server.py` imports tool modules, calls `mcp.run()` for stdio
-- ✅ `mcp_app.py` holds the shared FastMCP instance
-- ✅ Tools registered via `@mcp.tool()` decorators at import time
-- ✅ Stateless — no session state
-- ✅ 172 passing tests
-- ✅ Clean import hierarchy: server.py → tools_* → handlers → xml_utils/validators → models
-
-### Recommended Build Order
-
-**Phase 1: Add Transport Selection (1 file change, ~10 lines)**
-1. Modify `server.py` to accept `--http` flag or `MCP_TRANSPORT` env var
-2. If flag/env present, call `mcp.run(transport="streamable-http", host="0.0.0.0", port=8080)`
-3. Otherwise, call `mcp.run()` (stdio, existing behavior)
-4. **No changes to business logic, tool definitions, or handlers**
-5. **Test:** Run `python src/server.py` → stdio works (existing tests pass)
-6. **Test:** Run `python src/server.py --http` → HTTP server starts
-
-**Phase 2: HTTP Integration Testing (new test file, ~50 lines)**
-1. Add `tests/test_http_transport.py`
-2. Start server in subprocess with `--http` flag
-3. Use HTTP client (httpx or requests) to send JSON-RPC requests
-4. Verify responses match stdio behavior
-5. Test concurrent requests (ensure stateless tools handle concurrency)
-6. **Test:** All existing 172 tests pass with stdio
-7. **Test:** New HTTP integration tests pass
-
-**Phase 3: Documentation & Deployment Config (new files, no code changes)**
-1. Add `DEPLOYMENT.md` with stdio vs HTTP usage examples
-2. Add Docker/systemd service files for HTTP deployment (optional)
-3. Update README with transport selection instructions
-4. **No code changes** — all changes are documentation and deployment config
-
-**Phase 4: Optional HTTP Enhancements (incremental, non-breaking)**
-1. Add health check endpoint for HTTP deployments
-2. Add request logging middleware (HTTP only, for monitoring)
-3. Add rate limiting (HTTP only, for multi-user scenarios)
-4. **All enhancements HTTP-specific** — stdio behavior unchanged
-
-### Key Architectural Decisions
-
-✅ **Do NOT create separate entry points** (`server_stdio.py`, `server_http.py`) — use single entry point with runtime selection
-
-✅ **Do NOT change tool signatures or business logic** — transport is orthogonal to functionality
-
-✅ **Do NOT add FastAPI separately** — FastMCP uses uvicorn internally, no separate ASGI framework needed
-
-✅ **Do NOT create HTTP-specific tool variants** — same tools work with both transports (FastMCP handles serialization)
-
-✅ **Do verify statelessness** — critical for HTTP, benign for stdio, so validate once
-
-### Risk Mitigation
-
-**Risk:** Existing stdio workflows break when HTTP added
-**Mitigation:** Make stdio the default (no flags → stdio). HTTP requires explicit flag.
-
-**Risk:** HTTP deployment exposes security issues (path traversal, DOS)
-**Mitigation:** Existing validators already check paths. Add rate limiting if deploying publicly.
-
-**Risk:** Tests only cover stdio, HTTP behavior differs
-**Mitigation:** Add HTTP integration tests that call the same tools via HTTP and assert identical results.
-
-**Risk:** Concurrent HTTP requests expose hidden state
-**Mitigation:** Review all tool functions for global/module state before deploying HTTP. Add concurrency test.
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| MCP calls for 50 answers | 53 | 4 | 92% fewer calls |
+| Agent context for answers | ~50 insertion_xml strings + 50 target_context_xml strings | 50 answer_text strings only | ~60% less context |
+| Files changed | -- | 4 | Minimal surface area |
+| Lines added | -- | ~45 | Small change |
+| Breaking changes | -- | 0 | Full backward compatibility |
+| New MCP tools | -- | 0 | No new API surface |
 
 ## Sources
 
-### Official Documentation (HIGH confidence)
-- [FastMCP Running Your Server](https://gofastmcp.com/deployment/running-server) — transport parameter usage, CLI flags
-- [Model Context Protocol Architecture](https://modelcontextprotocol.io/docs/learn/architecture) — official MCP transport abstraction design
-
-### Educational Resources (MEDIUM-HIGH confidence)
-- [Dual-Transport MCP Servers: STDIO vs. HTTP Explained](https://medium.com/@kumaran.isk/dual-transport-mcp-servers-stdio-vs-http-explained-bd8865671e1f) — architectural patterns, rationale for dual transport
-- [Building and Exposing MCP Servers with FastMCP](https://medium.com/@anil.goyal0057/building-and-exposing-mcp-servers-with-fastmcp-stdio-http-and-sse-ace0f1d996dd) — practical examples of both transports
-- [One MCP Server, Two Transports: STDIO and HTTP](https://techcommunity.microsoft.com/blog/azuredevcommunityblog/one-mcp-server-two-transports-stdio-and-http/4443915) — Microsoft's guidance on dual-transport architecture
-
-### Implementation Examples (MEDIUM confidence)
-- [fastmcp-transport-guide](https://github.com/tnpaul/fastmcp-transport-guide) — concise guide with Python code examples for stdio, HTTP, SSE
-- [simple-mcp-server](https://github.com/rb58853/simple-mcp-server) — Python implementation with FastMCP, FastAPI, and streamable HTTP
-- [FastMCP Python SDK](https://github.com/jlowin/fastmcp) — official FastMCP repository with transport implementation
-
-### Recent Updates (MEDIUM confidence)
-- [SSE vs Streamable HTTP: Why MCP Switched](https://brightdata.com/blog/ai/sse-vs-streamable-http) — 2026 transport protocol evolution
-- [MCP-for-beginners stdio server guide](https://github.com/microsoft/mcp-for-beginners/blob/main/03-GettingStarted/05-stdio-server/README.md) — Microsoft's beginner guide to stdio transport
+- Direct codebase analysis of all files in `src/` and `tests/` (HIGH confidence)
+- CLAUDE.md project conventions and pipeline documentation (HIGH confidence)
+- No external dependencies -- this is an internal architecture decision based entirely on existing code structure
 
 ---
-*Architecture research for: Dual-transport MCP server (stdio + HTTP)*
-*Researched: 2026-02-16*
-*Focus: Adding HTTP transport to existing stdio-only FastMCP server without breaking core logic*
+*Architecture research for: Round-trip reduction in Word form filling*
+*Researched: 2026-02-17*
+*Focus: How to eliminate per-answer build_insertion_xml calls by moving formatting extraction into the write step*

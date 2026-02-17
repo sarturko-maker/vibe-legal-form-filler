@@ -1,393 +1,205 @@
-# Technology Stack: HTTP Transport for MCP Server
+# Stack Research: Batch XML Generation for MCP Round-Trip Reduction
 
-**Project:** vibe-legal-form-filler
-**Domain:** MCP server HTTP transport integration
-**Researched:** 2026-02-16
+**Domain:** MCP server performance optimization (OOXML batch processing)
+**Researched:** 2026-02-17
 **Overall Confidence:** HIGH
 
 ## Executive Summary
 
-Adding Streamable HTTP transport to your existing Python MCP server (FastMCP, stdio) is straightforward with the 2026 standard stack. FastMCP natively supports both stdio and Streamable HTTP transports through a single codebase. The official MCP Python SDK (v1.26.0+) includes all necessary HTTP transport components. Microsoft Copilot Studio exclusively uses Streamable HTTP (deprecated SSE in August 2025), making this the required transport for that integration.
+No new dependencies are needed. The round-trip reduction is an architectural refactoring of existing code, not a technology addition. The current stack (lxml 6.0.2, MCP SDK 1.26.0, Python 3.11+) already contains every capability required. The bottleneck is not library performance -- it is protocol-level overhead from 30 sequential agent-to-server round trips. The fix is moving formatting extraction into `write_answers` so the agent sends plain text instead of pre-built XML.
 
-**Key finding:** Streamable HTTP is the 2026 production standard, replacing the deprecated SSE transport. Your current FastMCP architecture requires minimal changes — primarily a transport flag and ASGI server configuration.
+## What Changes (and What Does Not)
 
-## Recommended Stack
+### No New Dependencies
 
-### Core HTTP Transport Layer
+| Current Technology | Version | Role in Fix | Change Needed |
+|-------------------|---------|-------------|---------------|
+| lxml | 6.0.2 | XML formatting extraction + run building | Move existing logic into write_answers path |
+| MCP SDK (mcp) | 1.26.0 | Tool registration and dispatch | No change to SDK usage |
+| pydantic | 2.12.5 | Input models for the new answer format | Add optional fields to existing models |
+| python-docx | 1.2.0 | Not involved (lxml handles OOXML directly) | No change |
 
-| Technology | Version | Purpose | Why Recommended |
-|------------|---------|---------|-----------------|
-| **mcp** | >=1.26.0 | MCP Python SDK with Streamable HTTP support | Official SDK, includes built-in Streamable HTTP transport (added in 1.0+). Your project already has 1.26.0 installed. |
-| **starlette** | >=0.52.1 | ASGI framework for HTTP server | Core dependency of MCP SDK. Already in your requirements.txt (0.52.1). Provides routing, middleware, lifespan management. |
-| **sse-starlette** | >=3.2.0 | Server-Sent Events for long-running operations | Required by MCP SDK for streaming responses. Already in your requirements.txt (3.2.0). |
-| **uvicorn** | >=0.40.0 | ASGI server for production deployment | Industry standard for FastAPI/Starlette in 2026. Already in your requirements.txt (0.40.0). Fast, stable, well-tested. |
+### Core Approach: Inline Formatting in write_answers
 
-**Confidence:** HIGH — All dependencies already installed. Version verification from requirements.txt and official MCP SDK pyproject.toml.
+The existing `build_insertion_xml` tool does two things per call:
+1. `extract_formatting(target_context_xml)` -- parses target element XML, extracts font/size/bold/italic/underline/color
+2. `build_run_xml(answer_text, formatting)` -- creates a `<w:r>` element with that formatting
 
-### Supporting Libraries (Optional)
+Both functions live in `xml_formatting.py` (lines 124-197). They are pure functions with no state. The fix is to call these same functions inside `word_writer.py` during `write_answers`, eliminating the need for the agent to call `build_insertion_xml` 30 times.
 
-| Library | Version | Purpose | When to Use |
-|---------|---------|---------|-------------|
-| **gunicorn** | >=23.0.0 | Process manager for multi-worker deployment | Production-only. Use when horizontal scaling needed. NOT for development. |
-| **httpx** | >=0.28.1 | HTTP client for testing MCP endpoints | Already in requirements.txt (0.28.1). Use for integration tests. |
-| **pytest-asyncio** | >=0.25.0 | Async test support for HTTP endpoints | Use when adding HTTP transport tests. Your project already has pytest (9.0.2). |
+## Recommended Stack (Unchanged)
 
-**Confidence:** HIGH — Based on MCP SDK dependencies and FastMCP deployment patterns.
+### Core Technologies
 
-### What You Already Have (No Changes Needed)
+| Technology | Version | Purpose | Why It Already Suffices |
+|------------|---------|---------|------------------------|
+| lxml | 6.0.2 | OOXML tree manipulation | SubElement-based `build_run_xml` creates one `<w:r>` per answer (~0.86ms). For 30 answers that is ~26ms total -- negligible. The bottleneck is 30 MCP round trips (100-200ms each), not lxml tree-building speed. |
+| MCP SDK (mcp) | 1.26.0 | FastMCP server framework | Built-in `@mcp.tool()` decorator. No batch tool protocol exists in MCP spec 2025-11-25 -- the spec supports JSON-RPC batching but client implementations (Claude, Cursor, etc.) make sequential `tools/call` requests. Server-side batching via combined tools is the standard pattern. |
+| pydantic | 2.12.5 | Tool input/output validation | Models like `AnswerPayload` need one optional field added (`answer_text`). Pydantic handles optional fields and backward compatibility natively. |
 
-Your `requirements.txt` already contains all core dependencies:
+### Supporting Libraries (No Additions)
 
-```txt
-mcp==1.26.0
-starlette==0.52.1
-sse-starlette==3.2.0
-uvicorn==0.40.0
-httpx==0.28.1
+| Library | Version | Role | Change Needed |
+|---------|---------|------|---------------|
+| xml_formatting.py | internal | `extract_formatting()` and `build_run_xml()` | Already importable from `src.xml_formatting`. Import into `word_writer.py`. |
+| xml_validation.py | internal | `is_well_formed_ooxml()` | Still needed for `structured` answer type. No change. |
+| xml_snippet_matching.py | internal | `NAMESPACES`, `SECURE_PARSER`, `parse_snippet()` | Already imported by `word_writer.py`. No change. |
+
+## lxml Optimization Techniques (Relevant to This Change)
+
+### What Matters
+
+1. **Avoid repeated `fromstring` calls on the same XML**. Currently each `build_insertion_xml` call parses `target_context_xml` via `_parse_element_xml()` (line 111-121 of `xml_formatting.py`). In the batch path, the document is already parsed as an lxml tree in `write_answers` -- extract formatting directly from the live tree element instead of re-serializing and re-parsing it.
+
+2. **Use SubElement for tree building** (already done). `build_run_xml` uses `etree.SubElement` for `<w:rPr>`, `<w:rFonts>`, `<w:sz>`, etc. This is the correct approach. SubElement is faster than creating detached elements and appending them.
+
+3. **Single `tostring` call at the end**. The current `write_answers` already serializes the entire tree once at the end (line 179 of `word_writer.py`). This is correct. Do not serialize individual runs -- build them as live elements and append directly.
+
+### What Does NOT Matter
+
+- **`iterparse` / streaming** -- not applicable. Document XML fits in memory (134KB typical). The tree is already fully parsed.
+- **Parser reuse** -- the `SECURE_PARSER` is already a module-level singleton, shared across all calls. No improvement available.
+- **cElementTree** -- not an option. The project uses lxml-specific features (Clark notation, namespace maps, `getparent()`). cET lacks these.
+- **`copy.deepcopy` optimization** -- not relevant. We build new `<w:r>` elements, we do not copy existing ones.
+
+### Key Optimization: Extract Formatting from Live Tree
+
+Current flow (30 round trips):
+```
+Agent gets target_context_xml string for each answer
+Agent calls build_insertion_xml(answer_text, target_context_xml)  # x30
+  -> fromstring(target_context_xml)  # parse string to element
+  -> _find_run_properties(elem)      # find <w:rPr>
+  -> extract font/size/color/bold    # read attributes
+  -> build_run_xml(text, formatting) # create <w:r> element
+  -> tostring(r_elem)                # serialize back to string
+Agent collects 30 insertion_xml strings
+Agent calls write_answers with 30 {xpath, insertion_xml} pairs
+  -> fromstring(doc_xml)             # parse full document
+  -> for each answer:
+       -> parse_snippet(insertion_xml)  # parse EACH insertion_xml string again
+       -> target.append(new_elem)       # insert into tree
+  -> tostring(root)                     # serialize entire tree
 ```
 
-**No new packages required for basic HTTP transport.**
-
-## Implementation Approach
-
-### Option 1: Direct HTTP Server (Recommended for Your Use Case)
-
-**What:** FastMCP's `.run()` method accepts a `transport` parameter. Change from default `stdio` to `streamable-http`.
-
-**Why recommended for you:**
-- Simplest migration path from stdio
-- No code restructuring needed
-- Single flag toggles transport mode
-- FastMCP handles all HTTP server configuration
-- Perfect for Microsoft Copilot Studio integration (their requirement)
-
-**Code changes (minimal):**
-
-```python
-# src/server.py — BEFORE
-if __name__ == "__main__":
-    mcp.run()  # defaults to stdio transport
-
-# src/server.py — AFTER
-if __name__ == "__main__":
-    import sys
-    transport = "streamable-http" if "--http" in sys.argv else "stdio"
-    mcp.run(transport=transport)
+Optimized flow (0 round trips for build_insertion_xml):
+```
+Agent calls write_answers with 30 {xpath, answer_text} pairs
+  -> fromstring(doc_xml)             # parse full document ONCE
+  -> for each answer:
+       -> xpath lookup -> target element (already in tree)
+       -> _find_run_properties(target)   # extract from LIVE element, no parsing
+       -> build <w:r> as live element    # SubElement, no serialization
+       -> target.append(r_elem)          # insert directly into tree
+  -> tostring(root)                     # serialize entire tree ONCE
 ```
 
-**Run commands:**
-- stdio (Claude Code, Gemini CLI): `python -m src.server`
-- HTTP (Copilot Studio): `python -m src.server --http`
+This eliminates: 30 `fromstring` calls for target_context_xml, 30 `tostring` calls for insertion_xml, 30 `parse_snippet` calls in write_answers. All replaced by direct element access.
 
-**Confidence:** HIGH — Pattern verified in FastMCP documentation and multiple production examples.
+## MCP Protocol Patterns for Batch Operations
 
-### Option 2: ASGI Application (For Advanced Integration)
+### Why No Protocol-Level Batch Exists
 
-**What:** Create an ASGI app with `mcp.http_app()`, mount in Starlette/FastAPI, serve with uvicorn.
+The MCP spec (2025-11-25) supports JSON-RPC 2.0 batching at the transport layer, but no mainstream MCP client (Claude Desktop, Claude Code, Cursor, Windsurf, OpenAI) implements it for `tools/call`. Each tool invocation is a separate request-response cycle. The `mcp-batchit` project exists as a workaround aggregator, but it is an external proxy server -- not something to integrate into our server.
 
-**When to use:**
-- Need custom middleware (auth, logging, CORS)
-- Integrating MCP into existing FastAPI service
-- Multiple workers with gunicorn
-- Custom lifespan management
+### The Correct Pattern: Combined Tool
 
-**Code structure:**
+The standard MCP pattern for reducing round trips is designing tools that accept batch inputs natively. This is already partially implemented in `write_answers` (accepts an array of answers). The fix extends this pattern to accept `answer_text` alongside or instead of `insertion_xml`.
 
-```python
-# src/http_server.py (new file)
-from src.mcp_app import mcp
-from starlette.applications import Starlette
-from starlette.routing import Mount
+### Backward Compatibility Strategy
 
-mcp_app = mcp.http_app(path="/mcp")
+The existing `build_insertion_xml` tool MUST remain available because:
+1. Agents using `structured` answer type need it (AI-provided OOXML, not plain text)
+2. Existing agent workflows depend on it
+3. It serves as a debugging/inspection tool
 
-app = Starlette(
-    routes=[Mount("/", app=mcp_app)],
-    lifespan=mcp_app.lifespan  # CRITICAL: session manager won't initialize without this
-)
-
-# Run: uvicorn src.http_server:app --host 127.0.0.1 --port 8000
-```
-
-**Confidence:** HIGH — Pattern from FastMCP HTTP deployment docs and MCP SDK examples.
-
-## Installation (If Dependencies Missing)
-
-Your project already has all dependencies. If starting fresh:
-
-```bash
-# Core (already in your requirements.txt)
-pip install mcp>=1.26.0 starlette>=0.52.1 sse-starlette>=3.2.0 uvicorn>=0.40.0
-
-# Production multi-worker (optional, not yet needed)
-pip install gunicorn>=23.0.0
-
-# Testing HTTP endpoints (optional)
-pip install pytest-asyncio>=0.25.0
-```
+The new batch path adds a parallel code path inside `write_answers`, not a replacement.
 
 ## Alternatives Considered
 
-| Recommended | Alternative | When to Use Alternative | Why Not Primary |
-|-------------|-------------|-------------------------|-----------------|
-| **Streamable HTTP** | SSE (Server-Sent Events) | NEVER for new code | Deprecated by MCP in August 2025. Copilot Studio doesn't support it. Two-endpoint architecture (POST + SSE stream) vs single-endpoint Streamable HTTP. |
-| **Uvicorn** | Hypercorn | Need HTTP/2 or mix ASGI+WSGI | Uvicorn faster for pure ASGI. Your use case is pure ASGI. |
-| **Uvicorn** | Gunicorn standalone | Pure WSGI app (Flask/Django) | You have ASGI (Starlette/FastMCP). Gunicorn only as process manager with uvicorn workers. |
-| **FastMCP** | Raw MCP SDK | Need custom protocol implementation | FastMCP provides decorator-based tools (@mcp.tool), auto HTTP/stdio switching. You're already using it. |
-| **Flag-based transport** | Separate server files | Completely different deployment architectures | Single codebase cleaner. Your stdio and HTTP use cases identical except transport. |
+| Recommended | Alternative | Why Not |
+|-------------|-------------|---------|
+| Inline formatting in write_answers | New `batch_build_insertion_xml` tool | Still requires an extra MCP round trip. Goal is zero extra round trips for plain text answers. |
+| Keep lxml element-level operations | Template XML strings with f-strings | Fragile, no namespace handling, XML injection risk, harder to maintain. |
+| Optional `answer_text` field on AnswerPayload | New model class like BatchAnswer | More disruption to existing code. Optional field preserves backward compat. |
+| Extract formatting from live XPath target | Pass id_to_xpath into write_answers for lookup | id_to_xpath is already available from extract_structure_compact. But formatting extraction needs the actual element, not just its XPath. The live tree already has the element after XPath lookup. |
 
-**Confidence:** HIGH — Based on MCP spec changes (SSE deprecation), FastMCP architecture, and ASGI server benchmarks.
+## What NOT to Add
 
-## What NOT to Use
+| Avoid | Why | Do Instead |
+|-------|-----|------------|
+| fastmcp (standalone package) | The project uses `mcp.server.fastmcp.FastMCP` from the official MCP SDK. The standalone `fastmcp` package (v2.x/3.x by jlowin) is a separate project with different APIs. Mixing them causes import conflicts. | Stay on `mcp>=1.23.0` from pyproject.toml |
+| mcp-batchit or similar proxy | Adds deployment complexity, another process to manage, and does not reduce the actual computation overhead -- only aggregates calls. | Inline the batch logic inside the server itself |
+| cElementTree | Lacks lxml-specific features (Clark notation, getparent, namespace-aware XPath). Would require rewriting xml_snippet_matching.py, xml_formatting.py, and xml_validation.py. | Continue using lxml 6.0.2 |
+| async processing inside write_answers | The operations are CPU-bound (XML tree manipulation), not I/O-bound. Python's GIL means async/threading provides zero speedup for lxml element creation. | Keep synchronous processing; the total CPU time for 30 answers is ~26ms |
+| XML template caching / memoization | Formatting varies per target element (different cells have different fonts/sizes). Caching would require invalidation logic that adds complexity for negligible gain. | Extract formatting fresh for each target from the live tree |
 
-| Avoid | Why | Use Instead |
-|-------|-----|-------------|
-| **SSE transport** | Deprecated August 2025. Copilot Studio removed support. Less efficient than Streamable HTTP (two connections vs one). | Streamable HTTP (built into MCP SDK 1.26.0) |
-| **Custom HTTP implementation** | MCP SDK handles protocol, session management, streaming. Reinventing adds bugs. | `mcp.run(transport="streamable-http")` or `mcp.http_app()` |
-| **Binding to 0.0.0.0** | Security risk. Exposes MCP server to network. Microsoft Copilot Studio docs specify localhost. | Bind to 127.0.0.1 only (uvicorn default) |
-| **gunicorn for development** | Adds complexity. No benefit during local testing. | uvicorn directly (simpler, faster iteration) |
-| **HTTP/2 (Hypercorn)** | Not required by MCP spec. Copilot Studio uses HTTP/1.1. Adds complexity. | Uvicorn with HTTP/1.1 (standard, tested) |
-| **Custom session storage** | MCP SDK includes StreamableHTTPSessionManager (in-memory, Mcp-Session-Id header). Copilot Studio sends session ID. | Default MCP SDK session manager (works out of box) |
+## Implementation Integration Points
 
-**Confidence:** HIGH — Based on MCP spec, Copilot Studio integration docs, security best practices.
+### Files That Change
 
-## Stack Patterns by Use Case
+| File | What Changes | Lines Affected |
+|------|-------------|----------------|
+| `src/models.py` | Add optional `answer_text: str = ""` to `AnswerPayload` | ~3 lines added |
+| `src/handlers/word_writer.py` | Import `_find_run_properties` and `_apply_*` helpers from `xml_formatting`. Add `_build_run_element()` helper that works on live tree elements. Modify `_apply_answer()` to build XML inline when `answer_text` is provided and `insertion_xml` is empty. | ~25 lines added |
+| `src/tool_errors.py` | Allow `answer_text` as known field in Word payload validation | ~3 lines changed |
+| `src/tools_extract.py` | `build_insertion_xml` tool remains unchanged | 0 lines |
+| `src/tools_write.py` | `write_answers` tool unchanged (passes through to handler) | 0 lines |
 
-### Development (Local Testing)
+### Files That Do NOT Change
 
-```bash
-# stdio transport for Claude Code / Gemini CLI
-python -m src.server
+| File | Why Not |
+|------|---------|
+| `src/xml_formatting.py` | Functions are already importable. A new variant that accepts a live element (instead of an XML string) belongs in word_writer.py to keep xml_formatting.py focused on its original string-in/string-out contract. |
+| `src/xml_validation.py` | Only used for structured answer type, which is unchanged. |
+| `src/handlers/word_indexer.py` | Extraction path unchanged. |
+| `src/handlers/word_parser.py` | Parsing unchanged. |
+| `src/mcp_app.py` | No new tools registered. |
 
-# HTTP transport for Copilot Studio testing
-python -m src.server --http
-# → Binds to 127.0.0.1:8000 (localhost only)
-```
-
-**Libraries:** mcp, starlette, sse-starlette, uvicorn
-**Config:** Single process, auto-reload on code changes (uvicorn --reload flag)
-
-### CI/CD Testing
-
-```bash
-# Run HTTP server in background
-python -m src.server --http &
-SERVER_PID=$!
-
-# Test with httpx client
-pytest tests/test_http_transport.py
-
-# Cleanup
-kill $SERVER_PID
-```
-
-**Libraries:** mcp, pytest, pytest-asyncio, httpx
-**Config:** Ephemeral server, random port, localhost binding
-
-### Production (Microsoft Copilot Studio)
-
-**Single-worker (recommended for v1):**
-
-```bash
-# Explicit uvicorn command (more control than mcp.run())
-uvicorn src.http_server:app --host 127.0.0.1 --port 8000 --workers 1
-```
-
-**Why single-worker:** MCP sessions stored in-memory. Multi-worker requires sticky sessions or shared session store. Your v1 doesn't need scale — Copilot Studio connects once per user session.
-
-**Future multi-worker (when scaling needed):**
-
-```bash
-# Gunicorn process manager + uvicorn workers
-gunicorn src.http_server:app \
-  --workers 4 \
-  --worker-class uvicorn.workers.UvicornWorker \
-  --bind 127.0.0.1:8000 \
-  --timeout 120
-```
-
-**Requires:** Sticky sessions (load balancer routes same session ID to same worker) OR shared session storage (Redis/database). NOT needed for v1.
-
-**Confidence:** HIGH — Based on FastMCP deployment patterns, MCP session architecture, Copilot Studio integration requirements.
-
-## Version Compatibility Matrix
-
-| MCP SDK | Starlette | sse-starlette | Uvicorn | Notes |
-|---------|-----------|---------------|---------|-------|
-| 1.26.0 | >=0.52.0 | >=3.2.0 | >=0.40.0 | Your current versions (tested, working) |
-| 1.23.0-1.25.x | >=0.50.0 | >=3.0.0 | >=0.38.0 | Older MCP versions (pre-1.26 session fixes) |
-| <1.0.0 | N/A | N/A | N/A | No Streamable HTTP support (stdio only) |
-
-**Critical compatibility notes:**
-
-1. **MCP SDK 1.26.0+** includes StreamableHTTPSessionManager fixes for concurrent requests
-2. **sse-starlette 3.2.0+** required for Starlette 0.52.x compatibility (breaking change in 0.50.0)
-3. **Uvicorn 0.40.0+** includes HTTP/1.1 pipelining fixes (better concurrent request handling)
-
-**Confidence:** HIGH — Verified from your requirements.txt, MCP SDK pyproject.toml, sse-starlette changelog.
-
-## Transport Feature Comparison
-
-| Feature | stdio | Streamable HTTP | Why It Matters |
-|---------|-------|-----------------|----------------|
-| **Local tool access** | ✅ Native (subprocess) | ❌ Network request | stdio: Claude Code reads local files directly. HTTP: MCP server must handle file access. |
-| **Remote deployment** | ❌ Requires SSH/exec | ✅ Native (HTTP POST) | HTTP: Copilot Studio connects via URL. stdio: Not possible over network. |
-| **Session management** | ❌ Process lifetime | ✅ Mcp-Session-Id header | HTTP: Server maintains state across requests. stdio: Stateless (new process each call). |
-| **Authentication** | ❌ OS-level only | ✅ HTTP headers/OAuth | HTTP: Can add auth layer. stdio: Inherits shell permissions. |
-| **Horizontal scaling** | ❌ Single process | ✅ Multi-worker (with sticky sessions) | HTTP: Can scale to multiple instances. stdio: One process per client. |
-| **Latency** | ~microseconds | ~milliseconds | stdio: No network stack. HTTP: Network + parsing overhead. For form filling (seconds), negligible. |
-| **Client compatibility** | Claude Code, Gemini CLI, local tools | Copilot Studio, web clients, remote agents | Your requirement: BOTH (keep stdio, add HTTP). |
-
-**Recommendation:** Keep stdio as default (better for development), add `--http` flag for Copilot Studio.
-
-**Confidence:** HIGH — Based on MCP transport spec, FastMCP docs, stdio vs HTTP architecture.
-
-## Security Configuration (Localhost-Only Binding)
-
-### Recommended Production Config (v1)
+### New Helper Function Signature
 
 ```python
-# src/http_server.py
-import os
+# In word_writer.py
+def _build_run_element(
+    target: etree._Element, answer_text: str
+) -> etree._Element:
+    """Build a <w:r> element inheriting formatting from the target element.
 
-# CRITICAL: Bind to localhost only (never 0.0.0.0 in production)
-HOST = os.getenv("MCP_HOST", "127.0.0.1")  # Default: localhost
-PORT = int(os.getenv("MCP_PORT", "8000"))
-
-# Run: uvicorn src.http_server:app --host $HOST --port $PORT
+    Extracts run properties directly from the live tree element,
+    avoiding serialization/re-parsing overhead. Returns a live lxml
+    element ready to append into the tree.
+    """
 ```
 
-**Why localhost-only:**
+This function reuses `_find_run_properties` and the formatting-application helpers from `xml_formatting.py` but works on live elements instead of serialized XML strings.
 
-1. **Microsoft Copilot Studio requirement:** Docs specify localhost binding (cloud service connects via Azure relay, not public IP)
-2. **Security:** Prevents network exposure of form-filling tools (data exfiltration risk if exposed)
-3. **Testing:** Same as production (no surprises when deploying)
+## Version Compatibility
 
-**Never use `0.0.0.0` binding** — exposes MCP server to all network interfaces. Security antipattern for MCP servers.
-
-**Confidence:** HIGH — Based on Copilot Studio docs, MCP security best practices, security audit reports.
-
-### Future Authentication (v2, when needed)
-
-When moving beyond localhost-only:
-
-```python
-# Option 1: HTTP Bearer token (simplest)
-from starlette.middleware.authentication import AuthenticationMiddleware
-from starlette.authentication import AuthCredentials, SimpleUser, AuthenticationBackend
-
-class BearerTokenAuth(AuthenticationBackend):
-    async def authenticate(self, conn):
-        auth = conn.headers.get("Authorization")
-        if not auth or not auth.startswith("Bearer "):
-            return None
-        token = auth[7:]  # Strip "Bearer "
-        # Validate token (check against env var for v1)
-        if token != os.getenv("MCP_TOKEN"):
-            return None
-        return AuthCredentials(["authenticated"]), SimpleUser("mcp-client")
-
-app.add_middleware(AuthenticationMiddleware, backend=BearerTokenAuth())
-```
-
-**NOT needed for v1** (localhost binding sufficient). Document for future.
-
-**Confidence:** MEDIUM — Pattern from Starlette docs, but not yet tested with MCP servers. Phase 2 research needed.
-
-## Client Testing Compatibility
-
-### Tested Clients
-
-| Client | Transport | Compatibility | Notes |
-|--------|-----------|---------------|-------|
-| **Claude Code** | stdio | ✅ Working (current) | Your existing setup. No changes needed. |
-| **Gemini CLI** | stdio | ✅ Expected to work | Uses same stdio protocol as Claude Code. MCP SDK handles both. |
-| **Microsoft Copilot Studio** | Streamable HTTP | ✅ Required | Deprecated SSE August 2025. HTTP-only now. |
-| **Antigravity (Google)** | stdio, Streamable HTTP | ⚠️ Partial | Supports MCP, but tool naming conflicts reported (Feb 2026). May need proxy script for dot-notation tools. |
-
-**Testing strategy:**
-
-1. **stdio (Phase 1):** Test with Claude Code (already working), then Gemini CLI
-2. **HTTP (Phase 2):** Test with `httpx` client (pytest), then Copilot Studio sandbox
-3. **Antigravity (Phase 3):** Test after stdio/HTTP confirmed working. Handle naming conflicts if encountered.
-
-**Confidence:** MEDIUM — stdio compatibility HIGH (working), HTTP compatibility HIGH (standard protocol), Antigravity MEDIUM (reported issues but workarounds exist).
-
-## Deployment Architecture (Recommended)
-
-```
-┌─────────────────────────────────────────────┐
-│  MCP Server (Single Codebase)              │
-│                                             │
-│  ┌───────────────┐   ┌──────────────────┐  │
-│  │ FastMCP App   │   │  Transport Layer │  │
-│  │               │   │                  │  │
-│  │ • Tools       │──▶│  stdio (default) │  │
-│  │ • Resources   │   │  --http flag     │  │
-│  │ • Prompts     │   │                  │  │
-│  └───────────────┘   └──────────────────┘  │
-│                             │               │
-│                             ▼               │
-│              ┌──────────────────────────┐   │
-│              │ Starlette ASGI App       │   │
-│              │ • /mcp endpoint          │   │
-│              │ • StreamableHTTPSession  │   │
-│              │ • lifespan management    │   │
-│              └──────────────────────────┘   │
-│                             │               │
-└─────────────────────────────┼───────────────┘
-                              ▼
-                      ┌──────────────┐
-                      │   Uvicorn    │
-                      │ 127.0.0.1:8000│
-                      └──────────────┘
-                              │
-        ┌─────────────────────┼─────────────────────┐
-        ▼                     ▼                     ▼
-   ┌──────────┐       ┌──────────────┐      ┌───────────┐
-   │ Claude   │       │ Copilot      │      │ Gemini    │
-   │ Code     │       │ Studio       │      │ CLI       │
-   │ (stdio)  │       │ (HTTP)       │      │ (stdio)   │
-   └──────────┘       └──────────────┘      └───────────┘
-```
-
-**Key architectural decisions:**
-
-1. **Single codebase** — No separate http_server.py vs stdio_server.py. Transport flag only.
-2. **Flag-based switching** — `--http` flag toggles transport. Same tools/logic regardless.
-3. **Localhost binding** — 127.0.0.1 only (never 0.0.0.0). Copilot Studio connects via relay.
-4. **No authentication v1** — Localhost binding sufficient. Add auth in v2 if needed.
-5. **Single worker** — No gunicorn/multi-worker until scaling required. Session management simpler.
-
-**Confidence:** HIGH — Minimal-change architecture. Preserves working stdio, adds HTTP with one flag.
+| Package | Current | Minimum Required | Notes |
+|---------|---------|-----------------|-------|
+| lxml | 6.0.2 | >=4.9.1 (per pyproject.toml) | 6.0.x adds zero-copy parsing from memoryview, but not relevant here. No API changes affect this work. |
+| mcp | 1.26.0 | >=1.23.0 (per pyproject.toml) | FastMCP decorator API stable since 1.0. No changes needed. |
+| pydantic | 2.12.5 | >=2.4.0 (per pyproject.toml) | Optional fields with defaults work in all 2.x versions. |
+| python-docx | 1.2.0 | >=1.0.0 | Not involved in this change. |
 
 ## Sources
 
 ### Official Documentation (HIGH confidence)
-- [MCP Python SDK GitHub](https://github.com/modelcontextprotocol/python-sdk) — Official SDK repository
-- [FastMCP HTTP Deployment](https://gofastmcp.com/deployment/http) — HTTP transport configuration
-- [Microsoft Copilot Studio MCP Integration](https://learn.microsoft.com/en-us/microsoft-copilot-studio/mcp-add-existing-server-to-agent) — Copilot Studio requirements
-- [MCP Python SDK PyPI](https://pypi.org/project/mcp/) — Version history and dependencies
+- [lxml Performance Benchmarks](https://lxml.de/performance.html) -- SubElement creation ~0.86ms/pass, serialization faster than alternatives. Confirms SubElement approach is correct.
+- [lxml 6.0.0 Release Notes](https://lxml.de/6.0/changes-6.0.0.html) -- zero-copy memoryview parsing, decompress=False option. No breaking changes affecting this work.
+- [MCP Specification 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25) -- JSON-RPC batching at transport level, but no client implements batch tools/call.
+- [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) -- v1.26.0 (Jan 2026). FastMCP integrated. No batch tool API.
 
-### Technical Implementation (HIGH confidence)
-- [Cloudflare: Streamable HTTP Transport](https://blog.cloudflare.com/streamable-http-mcp-servers-python/) — Streamable HTTP explanation
-- [Building Production-Ready MCP Server](https://medium.com/@nsaikiranvarma/building-production-ready-mcp-server-with-streamable-http-transport-in-15-minutes-ba15f350ac3c) — Deployment patterns
-- [FastMCP with Uvicorn Integration](https://medium.com/@wilson.urdaneta/taming-the-beast-3-lessons-learned-integrating-fastmcp-sse-with-uvicorn-and-pytest-5b5527763078) — Testing and integration
+### Community Patterns (MEDIUM confidence)
+- [mcp-batchit](https://github.com/ryanjoachim/mcp-batchit) -- External proxy approach for batching. Validates that no native batch mechanism exists in MCP protocol.
+- [lxml Tutorial](https://lxml.de/tutorial.html) -- SubElement usage patterns, tree manipulation best practices.
 
-### Security & Best Practices (MEDIUM-HIGH confidence)
-- [MCP Security Best Practices](https://workos.com/blog/mcp-security-risks-best-practices) — Security considerations
-- [MCP Server Hardening](https://protocolguard.com/resources/mcp-server-hardening/) — Localhost binding, reverse proxy
-
-### Performance & Comparison (MEDIUM confidence)
-- [Uvicorn vs Hypercorn vs Gunicorn](https://leapcell.io/blog/gunicorn-uvicorn-hypercorn-choosing-the-right-python-web-server) — ASGI server comparison
-- [SSE vs Streamable HTTP](https://brightdata.com/blog/ai/sse-vs-streamable-http) — Transport protocol differences
-
-### Client Compatibility (MEDIUM confidence)
-- [Gemini CLI MCP Servers](https://geminicli.com/docs/tools/mcp-server/) — Gemini CLI integration
-- [Antigravity MCP Integration](https://medium.com/@andrea.bresolin/using-an-mcp-server-with-google-antigravity-and-gemini-cli-for-android-development-efaea5a581ad) — Antigravity compatibility notes
+### Direct Code Analysis (HIGH confidence)
+- `src/xml_formatting.py` -- `extract_formatting()` (line 124), `build_run_xml()` (line 178), `_find_run_properties()` (line 31). Pure functions, no state, directly reusable.
+- `src/handlers/word_writer.py` -- `write_answers()` (line 162), `_apply_answer()` (line 143). XPath lookup already produces live tree element. Formatting extraction can hook in here.
+- `src/tools_extract.py` -- `build_insertion_xml` tool (line 161). Remains unchanged for backward compatibility.
+- `src/models.py` -- `AnswerPayload` (line 126). Adding optional `answer_text` field is the minimal model change.
 
 ---
-
-**Research completed:** 2026-02-16
-**Overall confidence:** HIGH (core stack), MEDIUM (client testing), LOW (advanced auth patterns)
-**Recommended next step:** Implement Option 1 (Direct HTTP Server) with `--http` flag.
+*Stack research for: MCP form-filler batch XML generation (round-trip reduction)*
+*Researched: 2026-02-17*
