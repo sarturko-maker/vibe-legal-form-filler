@@ -30,12 +30,18 @@ from io import BytesIO
 from lxml import etree
 
 from src.models import AnswerPayload, InsertionMode
-from src.xml_utils import NAMESPACES, SECURE_PARSER, parse_snippet
+from src.xml_utils import (
+    NAMESPACES,
+    SECURE_PARSER,
+    build_run_xml,
+    extract_formatting_from_element,
+    parse_snippet,
+)
 
 WORD_NAMESPACE_URI = NAMESPACES["w"]
 
 # Allowed XPath pattern: positional steps using OOXML element names only
-_XPATH_SAFE_RE = __import__("re").compile(
+_XPATH_SAFE_RE = re.compile(
     r"^\.(/w:(body|tbl|tr|tc|p|r|sdt|sdtContent)(\[\d+\])?)+$"
 )
 
@@ -43,9 +49,8 @@ _XPATH_SAFE_RE = __import__("re").compile(
 def _replace_content(target: etree._Element, insertion_xml: str) -> None:
     """Clear existing content in target and insert new XML.
 
-    Preserves structural property elements (w:pPr for paragraphs,
-    w:tcPr for table cells). When the target is a w:tc, wraps bare
-    w:r elements in a w:p — OOXML requires runs inside paragraphs.
+    Preserves w:pPr/w:tcPr property elements. When the target is a w:tc,
+    wraps bare w:r elements in a w:p (OOXML requires runs inside paragraphs).
     """
     preserve_tags = {
         f"{{{WORD_NAMESPACE_URI}}}pPr",
@@ -81,10 +86,9 @@ def _append_content(target: etree._Element, insertion_xml: str) -> None:
 def _replace_placeholder(
     target: etree._Element, insertion_xml: str, placeholder: str | None = None
 ) -> None:
-    """Find placeholder text within the target and replace it.
+    """Find placeholder text in the target and replace it.
 
-    If no specific placeholder is given, looks for common patterns:
-    [Enter here], [Enter ...], ___ (3+ underscores).
+    Without a specific placeholder, matches: [Enter ...], ___ (3+ underscores).
     """
     placeholder_patterns = [
         re.compile(r"\[Enter[^\]]*\]"),
@@ -115,10 +119,7 @@ def _replace_placeholder(
 
 
 def _repackage_docx_zip(file_bytes: bytes, modified_xml: bytes) -> bytes:
-    """Rewrite a .docx ZIP, replacing word/document.xml with modified_xml.
-
-    Copies all other archive entries unchanged.
-    """
+    """Rewrite a .docx ZIP, replacing word/document.xml with modified_xml."""
     output = BytesIO()
     with zipfile.ZipFile(BytesIO(file_bytes)) as zf_in:
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf_out:
@@ -131,13 +132,21 @@ def _repackage_docx_zip(file_bytes: bytes, modified_xml: bytes) -> bytes:
 
 
 def _validate_xpath(xpath: str) -> None:
-    """Reject XPath expressions that don't match the expected pattern.
-
-    Only allows positional steps using known OOXML element names.
-    Prevents XPath injection via function calls or complex predicates.
-    """
+    """Reject XPaths that don't match the expected positional-steps pattern."""
     if not _XPATH_SAFE_RE.match(xpath):
         raise ValueError(f"XPath does not match expected pattern: {xpath!r}")
+
+
+def _build_insertion_xml_for_answer_text(
+    target: etree._Element, answer_text: str
+) -> str:
+    """Build insertion OOXML from plain text, inheriting formatting from target.
+
+    This is the fast path: the server builds the same XML that the
+    build_insertion_xml MCP tool would produce, without an extra round-trip.
+    """
+    formatting = extract_formatting_from_element(target)
+    return build_run_xml(answer_text, formatting)
 
 
 def _apply_answer(body: etree._Element, answer: AnswerPayload) -> None:
@@ -151,12 +160,20 @@ def _apply_answer(body: etree._Element, answer: AnswerPayload) -> None:
         )
     target = matched[0]
 
+    # Fast path: build insertion XML from answer_text when provided
+    if answer.answer_text is not None and answer.answer_text.strip():
+        insertion_xml = _build_insertion_xml_for_answer_text(
+            target, answer.answer_text
+        )
+    else:
+        insertion_xml = answer.insertion_xml
+
     if answer.mode == InsertionMode.REPLACE_CONTENT:
-        _replace_content(target, answer.insertion_xml)
+        _replace_content(target, insertion_xml)
     elif answer.mode == InsertionMode.APPEND:
-        _append_content(target, answer.insertion_xml)
+        _append_content(target, insertion_xml)
     elif answer.mode == InsertionMode.REPLACE_PLACEHOLDER:
-        _replace_placeholder(target, answer.insertion_xml)
+        _replace_placeholder(target, insertion_xml)
 
 
 def write_answers(
