@@ -32,16 +32,15 @@ from src.handlers import word as word_handler
 from src.handlers.excel_verifier import verify_output as excel_verify_output
 from src.handlers.pdf_verifier import verify_output as pdf_verify_output
 from src.handlers.word_verifier import verify_output as word_verify_output
-from src.models import (
-    AnswerPayload,
-    ExpectedAnswer,
-    FileType,
-    InsertionMode,
+from src.models import FileType
+from src.tool_errors import (
+    build_answer_payloads,
+    resolve_file_for_tool,
+    validate_expected_answers,
 )
 from src.validators import (
     MAX_ANSWERS,
     MAX_FILE_SIZE,
-    resolve_file_input,
     validate_path_safe,
 )
 
@@ -83,33 +82,6 @@ def _resolve_answers_input(
     )
 
 
-def _build_payloads(answer_dicts: list[dict], ft: FileType) -> list[AnswerPayload]:
-    """Build AnswerPayload objects from raw dicts, adapting field names per format."""
-    if ft == FileType.WORD:
-        return [
-            AnswerPayload(
-                pair_id=a["pair_id"],
-                xpath=a["xpath"],
-                insertion_xml=a["insertion_xml"],
-                mode=InsertionMode(a["mode"]),
-            )
-            for a in answer_dicts
-        ]
-
-    # Excel and PDF use relaxed field names (cell_id/field_id, value)
-    return [
-        AnswerPayload(
-            pair_id=a["pair_id"],
-            xpath=a.get("xpath") or a.get("cell_id") or a.get("field_id", ""),
-            insertion_xml=a.get("insertion_xml") or a.get("value", ""),
-            mode=InsertionMode(
-                a.get("mode", InsertionMode.REPLACE_CONTENT.value)
-            ),
-        )
-        for a in answer_dicts
-    ]
-
-
 @mcp.tool()
 def write_answers(
     answers: list[dict] | None = None,
@@ -131,12 +103,13 @@ def write_answers(
 
     Returns {file_bytes_b64: ...} or {file_path: ...} when output_file_path is set.
     """
-    raw, ft = resolve_file_input(
-        file_bytes_b64 or None, file_type or None, file_path or None
+    raw, ft = resolve_file_for_tool(
+        "write_answers",
+        file_bytes_b64 or None, file_type or None, file_path or None,
     )
 
     answer_dicts = _resolve_answers_input(answers, answers_file_path)
-    payloads = _build_payloads(answer_dicts, ft)
+    payloads = build_answer_payloads(answer_dicts, ft)
 
     if ft == FileType.WORD:
         result_bytes = word_handler.write_answers(raw, payloads)
@@ -175,18 +148,17 @@ def verify_output(
     file_bytes_b64: base64-encoded file bytes (for programmatic use).
     expected_answers: list of {pair_id, xpath, expected_text} dicts.
     """
-    raw, ft = resolve_file_input(
-        file_bytes_b64 or None, file_type or None, file_path or None
+    raw, ft = resolve_file_for_tool(
+        "verify_output",
+        file_bytes_b64 or None, file_type or None, file_path or None,
     )
+    answers = validate_expected_answers(expected_answers)
 
     if ft == FileType.WORD:
-        answers = [ExpectedAnswer(**a) for a in expected_answers]
         return word_verify_output(raw, answers).model_dump()
     if ft == FileType.EXCEL:
-        answers = [ExpectedAnswer(**a) for a in expected_answers]
         return excel_verify_output(raw, answers).model_dump()
     if ft == FileType.PDF:
-        answers = [ExpectedAnswer(**a) for a in expected_answers]
         return pdf_verify_output(raw, answers).model_dump()
 
     raise NotImplementedError(

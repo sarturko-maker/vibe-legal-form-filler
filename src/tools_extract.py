@@ -37,12 +37,14 @@ from src.handlers.word_indexer import (
     extract_structure_compact as word_extract_compact,
 )
 from src.models import (
-    AnswerType,
     BuildInsertionXmlRequest,
     FileType,
-    LocationSnippet,
 )
-from src.validators import resolve_file_input
+from src.tool_errors import (
+    resolve_file_for_tool,
+    validate_answer_type,
+    validate_location_snippets,
+)
 
 
 @mcp.tool()
@@ -67,8 +69,9 @@ def extract_structure_compact(
     file_bytes_b64: base64-encoded file bytes (for programmatic use).
     Provide one or the other. file_type is auto-inferred from file_path extension.
     """
-    raw, ft = resolve_file_input(
-        file_bytes_b64 or None, file_type or None, file_path or None
+    raw, ft = resolve_file_for_tool(
+        "extract_structure_compact",
+        file_bytes_b64 or None, file_type or None, file_path or None,
     )
 
     if ft == FileType.WORD:
@@ -101,8 +104,9 @@ def extract_structure(
     file_path: path to the document on disk (preferred for interactive use).
     file_bytes_b64: base64-encoded file bytes (for programmatic use).
     """
-    raw, ft = resolve_file_input(
-        file_bytes_b64 or None, file_type or None, file_path or None
+    raw, ft = resolve_file_for_tool(
+        "extract_structure",
+        file_bytes_b64 or None, file_type or None, file_path or None,
     )
 
     if ft == FileType.WORD:
@@ -134,10 +138,11 @@ def validate_locations(
 
     locations: list of {pair_id, snippet} dicts.
     """
-    raw, ft = resolve_file_input(
-        file_bytes_b64 or None, file_type or None, file_path or None
+    raw, ft = resolve_file_for_tool(
+        "validate_locations",
+        file_bytes_b64 or None, file_type or None, file_path or None,
     )
-    locs = [LocationSnippet(**loc) for loc in locations]
+    locs = validate_location_snippets(locations)
 
     if ft == FileType.WORD:
         validated = word_handler.validate_locations(raw, locs)
@@ -162,7 +167,7 @@ def build_insertion_xml(
     plain_text: code templates the XML inheriting formatting.
     structured: validates AI-provided OOXML.
     """
-    at = AnswerType(answer_type)
+    at = validate_answer_type(answer_type)
     req = BuildInsertionXmlRequest(
         answer_text=answer_text,
         target_context_xml=target_context_xml,
@@ -182,8 +187,9 @@ def list_form_fields(
 
     Use on the form being filled, not on reference documents.
     """
-    raw, ft = resolve_file_input(
-        file_bytes_b64 or None, file_type or None, file_path or None
+    raw, ft = resolve_file_for_tool(
+        "list_form_fields",
+        file_bytes_b64 or None, file_type or None, file_path or None,
     )
 
     if ft == FileType.WORD:
