@@ -36,7 +36,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 **Milestone Goal:** Fix cross-platform agent ergonomics issues discovered during Gemini CLI testing — make the fast path truly zero-friction by resolving xpaths from pair_ids, defaulting modes, handling skips, and updating pipeline guidance.
 
-- [ ] **Phase 8: Resolution Infrastructure** - pair_id→xpath resolution via re-extraction for write_answers, cross-check validation
+- [x] **Phase 8: Resolution Infrastructure** - pair_id→xpath resolution via re-extraction for write_answers, cross-check validation (completed 2026-02-17)
 - [ ] **Phase 9: Ergonomics & Tolerance** - file_path echo, improved error messages, SKIP convention, mode defaults
 - [ ] **Phase 10: Verification Parity** - verify_output accepts pair_id without xpath, cross-check logic
 - [ ] **Phase 11: Documentation & QA** - CLAUDE.md pipeline updates, test coverage, regression validation
@@ -142,7 +142,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. When both xpath and pair_id are provided, server cross-checks and warns on mismatch (pair_id is authority)
   4. Cross-check warnings are logged but do not block writes (warning in response metadata)
   5. Resolution infrastructure reuses existing id_to_xpath logic from word_location_validator.py
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 - [ ] 08-01-PLAN.md -- Create pair_id_resolver module, make AnswerPayload xpath/mode optional (TDD)
 - [ ] 08-02-PLAN.md -- Wire resolution into write path, add cross-check warnings, E2E tests
 
@@ -199,7 +199,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 | 4. Cross-Platform Verification | v1.0 | 2/2 | Complete | 2026-02-17 |
 | 5. Fast Path Foundation | v2.0 | 2/2 | Complete | 2026-02-17 |
 | 6. Fast Path Implementation | v2.0 | 1/1 | Complete | 2026-02-17 |
-| 8. Resolution Infrastructure | v2.1 | 0/? | Not started | - |
+| 8. Resolution Infrastructure | v2.1 | Complete    | 2026-02-17 | - |
 | 9. Ergonomics & Tolerance | v2.1 | 0/? | Not started | - |
 | 10. Verification Parity | v2.1 | 0/? | Not started | - |
 | 11. Documentation & QA | v2.1 | 0/? | Not started | - |
