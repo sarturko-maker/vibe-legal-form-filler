@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-17)
 
 **Core value:** Agents fill forms correctly and fast -- the server handles all deterministic document manipulation so agents never touch raw OOXML, and the pipeline completes in the fewest possible round-trips.
-**Current focus:** Phase 10 - Verification Parity -- COMPLETE
+**Current focus:** Phase 11 - Documentation QA -- COMPLETE
 
 ## Current Position
 
-Phase: 10 of 11 (Verification Parity) -- COMPLETE
+Phase: 11 of 11 (Documentation QA) -- COMPLETE
 Plan: 1 of 1 in current phase
-Status: Phase complete
-Last activity: 2026-02-17 -- completed 10-01-PLAN.md
+Status: Phase complete -- v2.1 Gemini Consolidation milestone finished
+Last activity: 2026-02-17 -- completed 11-01-PLAN.md
 
-Progress: [##########] 95% (9 of 9 completed phases across all milestones)
+Progress: [##########] 100% (10 of 10 completed phases across all milestones)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 13 (6 v1.0 + 3 v2.0 + 2 v2.1 + 1 v2.1-ergo + 1 v2.1-verify)
+- Total plans completed: 14 (6 v1.0 + 3 v2.0 + 2 v2.1 + 1 v2.1-ergo + 1 v2.1-verify + 1 v2.1-docs)
 - Average duration: 2.9 min
-- Total execution time: 0.63 hours
+- Total execution time: 0.66 hours
 
 **By Phase (v1.0):**
 
@@ -46,6 +46,7 @@ Progress: [##########] 95% (9 of 9 completed phases across all milestones)
 | 08-resolution-infrastructure | 2 | 10 min | 5 min |
 | 09-ergonomics-tolerance | 1 | 3 min | 3 min |
 | 10-verification-parity | 1 | 4 min | 4 min |
+| 11-documentation-qa | 1 | 2 min | 2 min |
 
 *Updated after each plan completion*
 
@@ -68,6 +69,9 @@ Recent decisions affecting current work:
 - 09-01: Summary always present in write_answers response even when skipped=0
 - 10-01: Cross-check mismatch override only on Word path (Excel/PDF skip per 08-02)
 - 10-01: resolved_from injected via dict after model_dump() to avoid modifying handler verifiers
+- 11-01: Simplified Pipeline inserted before (not replacing) Full Pipeline -- both paths documented
+- 11-01: Style review as optional agent-side STEP 6 (no MCP tool) -- server inherits formatting already
+- 11-01: Three low-priority test gaps deferred -- existing 26 tests cover core v2.1 paths
 
 ### Pending Todos
 
@@ -75,11 +79,11 @@ None yet.
 
 ### Blockers/Concerns
 
-None. All 311 tests passing (306 existing + 5 from 10-01).
+None. All 311 tests passing. v2.1 Gemini Consolidation milestone complete.
 
 ## Session Continuity
 
 Last session: 2026-02-17
-Stopped at: Completed 10-01-PLAN.md (Phase 10 complete)
+Stopped at: Completed 11-01-PLAN.md (Phase 11 complete -- milestone finished)
 Resume file: None
-Next action: Execute Phase 11
+Next action: None -- v2.1 Gemini Consolidation milestone complete
