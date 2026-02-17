@@ -115,7 +115,9 @@ Plans:
   2. The inserted text inherits font family, font size, bold, italic, and color from the target element -- identical to what build_insertion_xml would have produced
   3. All three insertion modes (replace_content, append, replace_placeholder) work with answer_text
   4. A 30-answer write_answers call with answer_text completes without the agent ever calling build_insertion_xml
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 06-01-PLAN.md -- Fast path helper, routing in _apply_answer, tests for all three modes
 
 ### Phase 7: Verification and Documentation
 **Goal**: Proven correctness of the fast path through parity and edge-case tests, with updated agent guidance so callers adopt the new path
