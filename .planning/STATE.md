@@ -9,19 +9,19 @@ See: .planning/PROJECT.md (updated 2026-02-17)
 
 ## Current Position
 
-Phase: 8 of 11 (Resolution Infrastructure)
-Plan: 1 of 2 in current phase
-Status: Executing
-Last activity: 2026-02-17 -- completed 08-01-PLAN.md
+Phase: 8 of 11 (Resolution Infrastructure) -- COMPLETE
+Plan: 2 of 2 in current phase
+Status: Phase complete
+Last activity: 2026-02-17 -- completed 08-02-PLAN.md
 
-Progress: [########..] 75% (6 of 8 completed phases across all milestones)
+Progress: [########..] 80% (7 of 8 completed phases across all milestones)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 10 (6 v1.0 + 3 v2.0 + 1 v2.1)
-- Average duration: 2.2 min
-- Total execution time: 0.37 hours
+- Total plans completed: 11 (6 v1.0 + 3 v2.0 + 2 v2.1)
+- Average duration: 2.9 min
+- Total execution time: 0.53 hours
 
 **By Phase (v1.0):**
 
@@ -43,7 +43,7 @@ Progress: [########..] 75% (6 of 8 completed phases across all milestones)
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 08-resolution-infrastructure | 1 | 2 min | 2 min |
+| 08-resolution-infrastructure | 2 | 10 min | 5 min |
 
 *Updated after each plan completion*
 
@@ -59,6 +59,8 @@ Recent decisions affecting current work:
 - Phase 7 (QA/Docs) absorbed into v2.1 Phase 11 -- overlapping scope
 - 08-01: Lazy imports in resolver to avoid loading all three handlers at module level
 - 08-01: Resolver returns dict omitting missing pair_ids rather than raising errors
+- 08-02: Relaxed path (Excel/PDF) uses pair_id directly as xpath -- no re-extraction needed
+- 08-02: Cross-check warnings only on Word path where xpath and pair_id are distinct identifier systems
 
 ### Pending Todos
 
@@ -66,11 +68,11 @@ None yet.
 
 ### Blockers/Concerns
 
-None. All 289 tests passing (281 existing + 8 new from 08-01).
+None. All 295 tests passing (281 existing + 8 from 08-01 + 6 from 08-02).
 
 ## Session Continuity
 
 Last session: 2026-02-17
-Stopped at: Completed 08-01-PLAN.md
+Stopped at: Completed 08-02-PLAN.md (Phase 8 complete)
 Resume file: None
-Next action: Execute 08-02-PLAN.md
+Next action: Execute Phase 9
