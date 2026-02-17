@@ -169,7 +169,9 @@ Plans:
   2. Server resolves pair_id→xpath via re-extraction using the same logic as write_answers
   3. When both xpath and pair_id are provided, server cross-checks and warns on mismatch
   4. verify_output response includes resolution metadata (resolved_from="pair_id" or "xpath")
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 10-01-PLAN.md -- Model changes, resolution-aware validation, verify_output wiring, E2E tests
 
 ### Phase 11: Documentation & QA
 **Goal**: CLAUDE.md reflects new simplified API, all tests pass, new test coverage added for v2.1 features
