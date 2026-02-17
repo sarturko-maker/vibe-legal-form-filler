@@ -2,6 +2,10 @@
 
 from lxml import etree
 
+from src.xml_formatting import (
+    _parse_element_xml,
+    extract_formatting_from_element,
+)
 from src.xml_utils import (
     NAMESPACES,
     build_run_xml,
@@ -223,3 +227,52 @@ class TestIsWellFormedOoxml:
         # Empty string wraps to just <_wrapper/>, no children to check
         valid, err = is_well_formed_ooxml("")
         assert valid is True
+
+
+class TestExtractFormattingFromElement:
+    """Tests for extract_formatting_from_element parity with the string-based version."""
+
+    def test_matches_string_version(self) -> None:
+        """Parsed element produces identical formatting dict as the string path."""
+        xml_str = (
+            f'<w:r xmlns:w="{W}"><w:rPr>'
+            f'<w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>'
+            f'<w:sz w:val="24"/>'
+            f"<w:b/>"
+            f'<w:color w:val="0000FF"/>'
+            f"</w:rPr><w:t>text</w:t></w:r>"
+        )
+        from_string = extract_formatting(xml_str)
+        parsed_elem = _parse_element_xml(xml_str)
+        from_element = extract_formatting_from_element(parsed_elem)
+        assert from_string == from_element
+
+    def test_empty_rpr(self) -> None:
+        """Element with no <w:rPr> returns an empty dict."""
+        xml_str = f'<w:r xmlns:w="{W}"><w:t>plain</w:t></w:r>'
+        elem = _parse_element_xml(xml_str)
+        fmt = extract_formatting_from_element(elem)
+        assert fmt == {}
+
+    def test_paragraph_with_run(self) -> None:
+        """Extracts formatting from a run's rPr inside a <w:p> element."""
+        xml_str = (
+            f'<w:p xmlns:w="{W}"><w:r><w:rPr>'
+            f'<w:rFonts w:ascii="Times New Roman"/>'
+            f'<w:sz w:val="28"/>'
+            f"<w:i/>"
+            f"</w:rPr><w:t>styled</w:t></w:r></w:p>"
+        )
+        elem = _parse_element_xml(xml_str)
+        fmt = extract_formatting_from_element(elem)
+        assert fmt["font_ascii"] == "Times New Roman"
+        assert fmt["sz"] == "28"
+        assert fmt["italic"] is True
+
+    def test_importable_from_xml_utils(self) -> None:
+        """Confirm the function is importable from the barrel module."""
+        from src.xml_utils import extract_formatting_from_element as barrel_fn
+
+        assert callable(barrel_fn)
+        # Also verify it's the same function object
+        assert barrel_fn is extract_formatting_from_element
