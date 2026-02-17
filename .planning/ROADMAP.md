@@ -101,7 +101,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Validation rejects answers that provide neither `answer_text` nor `insertion_xml`, returning a clear error message that names both fields
   4. Existing agents using `insertion_xml` alone continue working with zero changes (all 234 tests pass)
   5. An answer payload containing both `answer_text` and `insertion_xml` in the same write_answers call is accepted (mixed mode)
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 05-01-PLAN.md -- Model field changes (answer_text on AnswerPayload), extract_formatting_from_element function, parity tests
+- [ ] 05-02-PLAN.md -- Batch validation logic (exactly-one-of semantics, error aggregation), integration tests
 
 ### Phase 6: Fast Path Implementation
 **Goal**: The server builds insertion OOXML internally during write_answers when answer_text is provided, eliminating the need for agents to call build_insertion_xml for plain-text answers
@@ -136,6 +139,6 @@ Phases execute in numeric order: 5 -> 6 -> 7
 | 2. Protocol Implementation | v1.0 | 1/1 | Complete | 2026-02-16 |
 | 3. HTTP Integration Testing | v1.0 | 2/2 | Complete | 2026-02-16 |
 | 4. Cross-Platform Verification | v1.0 | 2/2 | Complete | 2026-02-17 |
-| 5. Fast Path Foundation | v2.0 | 0/? | Not started | - |
+| 5. Fast Path Foundation | v2.0 | 0/2 | Planned | - |
 | 6. Fast Path Implementation | v2.0 | 0/? | Not started | - |
 | 7. Verification and Documentation | v2.0 | 0/? | Not started | - |
