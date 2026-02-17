@@ -71,33 +71,31 @@ Requirements for the Gemini Consolidation milestone. Fixes cross-platform agent 
 
 ## Traceability
 
-Updated during roadmap creation.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| ERG-01 | TBD | Pending |
-| ERG-02 | TBD | Pending |
-| ERG-03 | TBD | Pending |
-| ERG-04 | TBD | Pending |
-| ERG-05 | TBD | Pending |
-| TOL-01 | TBD | Pending |
-| TOL-02 | TBD | Pending |
-| VER-01 | TBD | Pending |
-| VER-02 | TBD | Pending |
-| PIPE-01 | TBD | Pending |
-| PIPE-02 | TBD | Pending |
-| PIPE-03 | TBD | Pending |
-| PIPE-04 | TBD | Pending |
-| QA-01 | TBD | Pending |
-| QA-02 | TBD | Pending |
-| QA-03 | TBD | Pending |
-| QA-04 | TBD | Pending |
+| ERG-01 | Phase 9 | Pending |
+| ERG-02 | Phase 9 | Pending |
+| ERG-03 | Phase 8 | Pending |
+| ERG-04 | Phase 8 | Pending |
+| ERG-05 | Phase 8 | Pending |
+| TOL-01 | Phase 9 | Pending |
+| TOL-02 | Phase 9 | Pending |
+| VER-01 | Phase 10 | Pending |
+| VER-02 | Phase 10 | Pending |
+| PIPE-01 | Phase 11 | Pending |
+| PIPE-02 | Phase 11 | Pending |
+| PIPE-03 | Phase 11 | Pending |
+| PIPE-04 | Phase 11 | Pending |
+| QA-01 | Phase 11 | Pending |
+| QA-02 | Phase 11 | Pending |
+| QA-03 | Phase 11 | Pending |
+| QA-04 | Phase 11 | Pending |
 
 **Coverage:**
 - v2.1 requirements: 17 total
-- Mapped to phases: 0
-- Unmapped: 17
+- Mapped to phases: 17
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-17*
-*Last updated: 2026-02-17 after v2.1 definition*
+*Last updated: 2026-02-17 after v2.1 roadmap creation*

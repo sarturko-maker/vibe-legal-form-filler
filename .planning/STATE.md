@@ -4,17 +4,17 @@
 
 See: .planning/PROJECT.md (updated 2026-02-17)
 
-**Core value:** Agents fill forms correctly and fast -- fewest possible round-trips
-**Current focus:** Milestone v2.1 -- Gemini Consolidation
+**Core value:** Agents fill forms correctly and fast -- the server handles all deterministic document manipulation so agents never touch raw OOXML, and the pipeline completes in the fewest possible round-trips.
+**Current focus:** Phase 8 - Resolution Infrastructure
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: --
-Status: Defining requirements
-Last activity: 2026-02-17 -- Milestone v2.1 started
+Phase: 8 of 11 (Resolution Infrastructure)
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-02-17 -- v2.1 roadmap created
 
-Progress: [########..] 85% (v1.0 complete, v2.0 phases 5-6 complete, v2.1 starting)
+Progress: [########..] 75% (6 of 8 completed phases across all milestones)
 
 ## Performance Metrics
 
@@ -48,10 +48,9 @@ Progress: [########..] 85% (v1.0 complete, v2.0 phases 5-6 complete, v2.1 starti
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- v2.0 Phase 7 (QA/Docs) absorbed into v2.1 milestone -- overlapping scope
-- PERF-03 (multi-line answer_text) already implemented in v2.0 Phase 6 -- moved to validated
-- pair_id resolution will be stateless (re-extract on each call) to maintain server statelessness
-- SKIP convention chosen over empty-string semantics for intentional blanks
+- v2.0: answer_text fast path (Approach A) over batch tool or removal -- simplest API change, backward compatible
+- v2.1: Stateless pair_id resolution via re-extraction -- small perf cost but eliminates agent xpath bookkeeping
+- Phase 7 (QA/Docs) absorbed into v2.1 Phase 11 -- overlapping scope
 
 ### Pending Todos
 
@@ -59,10 +58,11 @@ None yet.
 
 ### Blockers/Concerns
 
-None yet.
+None yet. All 281 tests passing at start of v2.1.
 
 ## Session Continuity
 
-Last session: 2026-02-17 (v2.1 milestone initialization)
-Stopped at: Requirements defined, roadmap pending
-Resume file: .planning/ROADMAP.md
+Last session: 2026-02-17
+Stopped at: v2.1 roadmap creation complete
+Resume file: None
+Next action: /gsd:plan-phase 8

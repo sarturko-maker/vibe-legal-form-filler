@@ -3,7 +3,8 @@
 ## Milestones
 
 - v1.0 Cross-Platform Transport -- Phases 1-4 (shipped 2026-02-17)
-- v2.0 Performance Optimization -- Phases 5-7 (in progress)
+- v2.0 Performance Optimization -- Phases 5-6 (shipped 2026-02-17, Phase 7 absorbed into v2.1)
+- v2.1 Gemini Consolidation -- Phases 8-11 (in progress)
 
 ## Phases
 
@@ -23,13 +24,22 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 </details>
 
-### v2.0 Performance Optimization (Phases 5-7)
+<details>
+<summary>v2.0 Performance Optimization (Phases 5-6) -- SHIPPED 2026-02-17</summary>
 
-**Milestone Goal:** Reduce MCP round-trips so a 30-question Word questionnaire completes in minutes instead of 10+, by eliminating the per-answer build_insertion_xml bottleneck.
+- [x] **Phase 5: Fast Path Foundation** - Add answer_text field, formatting extraction function, validation, backward compatibility
+- [x] **Phase 6: Fast Path Implementation** - Server builds insertion OOXML inline during write_answers for all insertion modes
 
-- [x] **Phase 5: Fast Path Foundation** - Add answer_text field, formatting extraction function, validation, backward compatibility (completed 2026-02-17)
-- [x] **Phase 6: Fast Path Implementation** - Server builds insertion OOXML inline during write_answers for all insertion modes (completed 2026-02-17)
-- [ ] **Phase 7: Verification and Documentation** - Parity tests, edge-case coverage, regression pass, agent guidance
+</details>
+
+### v2.1 Gemini Consolidation (Phases 8-11)
+
+**Milestone Goal:** Fix cross-platform agent ergonomics issues discovered during Gemini CLI testing — make the fast path truly zero-friction by resolving xpaths from pair_ids, defaulting modes, handling skips, and updating pipeline guidance.
+
+- [ ] **Phase 8: Resolution Infrastructure** - pair_id→xpath resolution via re-extraction for write_answers, cross-check validation
+- [ ] **Phase 9: Ergonomics & Tolerance** - file_path echo, improved error messages, SKIP convention, mode defaults
+- [ ] **Phase 10: Verification Parity** - verify_output accepts pair_id without xpath, cross-check logic
+- [ ] **Phase 11: Documentation & QA** - CLAUDE.md pipeline updates, test coverage, regression validation
 
 ## Phase Details
 
@@ -91,6 +101,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 </details>
 
+<details>
+<summary>v2.0 Phase Details (completed)</summary>
+
 ### Phase 5: Fast Path Foundation
 **Goal**: The API contract for answer_text is defined, formatting extraction is available as a public function, and validation enforces correct usage -- all without changing the write path yet
 **Depends on**: Phase 4 (v1.0 complete)
@@ -102,9 +115,8 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Existing agents using `insertion_xml` alone continue working with zero changes (all 234 tests pass)
   5. An answer payload containing both `answer_text` and `insertion_xml` in the same write_answers call is accepted (mixed mode)
 **Plans:** 2/2 plans complete
-Plans:
-- [ ] 05-01-PLAN.md -- Model field changes (answer_text on AnswerPayload), extract_formatting_from_element function, parity tests
-- [ ] 05-02-PLAN.md -- Batch validation logic (exactly-one-of semantics, error aggregation), integration tests
+- [x] 05-01-PLAN.md -- Model field changes (answer_text on AnswerPayload), extract_formatting_from_element function, parity tests
+- [x] 05-02-PLAN.md -- Batch validation logic (exactly-one-of semantics, error aggregation), integration tests
 
 ### Phase 6: Fast Path Implementation
 **Goal**: The server builds insertion OOXML internally during write_answers when answer_text is provided, eliminating the need for agents to call build_insertion_xml for plain-text answers
@@ -116,24 +128,66 @@ Plans:
   3. All three insertion modes (replace_content, append, replace_placeholder) work with answer_text
   4. A 30-answer write_answers call with answer_text completes without the agent ever calling build_insertion_xml
 **Plans:** 1/1 plans complete
-Plans:
-- [ ] 06-01-PLAN.md -- Fast path helper, routing in _apply_answer, tests for all three modes
+- [x] 06-01-PLAN.md -- Fast path helper, routing in _apply_answer, tests for all three modes
 
-### Phase 7: Verification and Documentation
-**Goal**: Proven correctness of the fast path through parity and edge-case tests, with updated agent guidance so callers adopt the new path
-**Depends on**: Phase 6
-**Requirements**: QA-01, QA-02, QA-03, DOCS-01, DOCS-02
+</details>
+
+### Phase 8: Resolution Infrastructure
+**Goal**: The server resolves xpaths from pair_ids via re-extraction so agents don't need to carry xpaths through the pipeline, with cross-checking when both are provided
+**Depends on**: Phase 6 (v2.0 complete)
+**Requirements**: ERG-03, ERG-04, ERG-05
 **Success Criteria** (what must be TRUE):
-  1. A parity test runs both paths (answer_text fast path vs build_insertion_xml + insertion_xml) on the same fixture data and confirms byte-identical output
-  2. Edge-case tests cover leading/trailing spaces, XML special characters (&, <, >, quotes), and empty string answer_text
-  3. All 234 existing tests pass after the complete v2.0 changes (zero regressions)
-  4. CLAUDE.md pipeline documentation shows answer_text as the preferred path for plain-text Word answers, with insertion_xml as the fallback for structured answers
-  5. Agent guidance section in CLAUDE.md explains when to use answer_text vs insertion_xml with a clear decision rule
+  1. Agent can call write_answers with pair_id and answer_text only (no xpath, no mode) and the answer is written correctly
+  2. Server re-extracts compact structure to resolve pair_id→xpath when xpath is not provided
+  3. When both xpath and pair_id are provided, server cross-checks and warns on mismatch (pair_id is authority)
+  4. Cross-check warnings are logged but do not block writes (warning in response metadata)
+  5. Resolution infrastructure reuses existing id_to_xpath logic from word_location_validator.py
+**Plans**: TBD
+
+### Phase 9: Ergonomics & Tolerance
+**Goal**: Small API improvements that reduce agent friction — file_path echo, better errors, SKIP convention, mode defaults
+**Depends on**: Phase 8
+**Requirements**: ERG-01, ERG-02, TOL-01, TOL-02
+**Success Criteria** (what must be TRUE):
+  1. extract_structure_compact response includes file_path when provided as input (agent doesn't need to track it separately)
+  2. write_answers error for missing file says "Missing file_path -- this is the path you passed to extract_structure_compact"
+  3. answer_text="SKIP" is recognized as intentional skip (no write, status="skipped" in response)
+  4. Skipped fields are reported in write_answers summary with count (e.g., "42 written, 3 skipped")
+  5. mode defaults to replace_content when answer_text is provided and mode is omitted
+**Plans**: TBD
+
+### Phase 10: Verification Parity
+**Goal**: verify_output accepts pair_id without xpath, matching the write_answers capability so agents use the same identifiers for both tools
+**Depends on**: Phase 8
+**Requirements**: VER-01, VER-02
+**Success Criteria** (what must be TRUE):
+  1. Agent can call verify_output with pair_id only (no xpath) and content verification works correctly
+  2. Server resolves pair_id→xpath via re-extraction using the same logic as write_answers
+  3. When both xpath and pair_id are provided, server cross-checks and warns on mismatch
+  4. verify_output response includes resolution metadata (resolved_from="pair_id" or "xpath")
+**Plans**: TBD
+
+### Phase 11: Documentation & QA
+**Goal**: CLAUDE.md reflects new simplified API, all tests pass, new test coverage added for v2.1 features
+**Depends on**: Phase 9, Phase 10
+**Requirements**: PIPE-01, PIPE-02, PIPE-03, PIPE-04, QA-01, QA-02, QA-03, QA-04
+**Success Criteria** (what must be TRUE):
+  1. CLAUDE.md pipeline includes style review step between write and verify
+  2. CLAUDE.md documents SKIP convention for intentionally blank fields (signatures, dates)
+  3. All tool docstrings updated with new optional parameters (pair_id, SKIP, mode defaults)
+  4. CLAUDE.md agent guidance documents simplified fast-path parameter set (pair_id + answer_text only)
+  5. All 281 existing tests pass after v2.1 changes
+  6. New tests for pair_id→xpath resolution in write_answers exist and pass
+  7. New tests for SKIP handling exist and pass
+  8. New tests for verify_output with pair_id only exist and pass
+**Plans**: TBD
 
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 5 -> 6 -> 7
+- v1.0: Phases 1 → 2 → 3 → 4 (complete)
+- v2.0: Phases 5 → 6 (complete)
+- v2.1: Phases 8 → 9 → 10 → 11
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -141,6 +195,9 @@ Phases execute in numeric order: 5 -> 6 -> 7
 | 2. Protocol Implementation | v1.0 | 1/1 | Complete | 2026-02-16 |
 | 3. HTTP Integration Testing | v1.0 | 2/2 | Complete | 2026-02-16 |
 | 4. Cross-Platform Verification | v1.0 | 2/2 | Complete | 2026-02-17 |
-| 5. Fast Path Foundation | v2.0 | Complete    | 2026-02-17 | - |
-| 6. Fast Path Implementation | v2.0 | Complete    | 2026-02-17 | - |
-| 7. Verification and Documentation | v2.0 | 0/? | Not started | - |
+| 5. Fast Path Foundation | v2.0 | 2/2 | Complete | 2026-02-17 |
+| 6. Fast Path Implementation | v2.0 | 1/1 | Complete | 2026-02-17 |
+| 8. Resolution Infrastructure | v2.1 | 0/? | Not started | - |
+| 9. Ergonomics & Tolerance | v2.1 | 0/? | Not started | - |
+| 10. Verification Parity | v2.1 | 0/? | Not started | - |
+| 11. Documentation & QA | v2.1 | 0/? | Not started | - |
