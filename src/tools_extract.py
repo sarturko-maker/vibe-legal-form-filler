@@ -55,19 +55,15 @@ def extract_structure_compact(
 ) -> dict:
     """Return a compact, indexed representation of the document structure.
 
-    Walks the document body and assigns stable element IDs (T1-R2-C1 for
-    table cells, P5 for paragraphs). Includes formatting hints, marks
-    answer targets, and flags complex elements.
+    Assigns stable element IDs (T1-R2-C1, P5). Includes formatting hints,
+    answer targets, and role indicators: [question] for text cells in rows
+    with answer targets, [answer] for empty/placeholder cells. Always write
+    to [answer] cells, never [question] cells.
 
-    This is the primary extraction tool — response is a few KB, not 134KB.
+    Primary extraction tool — a few KB, not 134KB. Use on the form being
+    filled, not reference documents.
 
-    Use this on the form/questionnaire you want to fill. For reference or
-    knowledge documents, the agent should read them using its own file
-    tools, not this MCP tool.
-
-    file_path: path to the document on disk (preferred for interactive use).
-    file_bytes_b64: base64-encoded file bytes (for programmatic use).
-    Provide one or the other. file_type is auto-inferred from file_path extension.
+    file_path: path on disk (preferred). file_bytes_b64: base64 (programmatic).
     """
     raw, ft = resolve_file_for_tool(
         "extract_structure_compact",
@@ -92,17 +88,12 @@ def extract_structure(
     file_type: str = "",
     file_path: str = "",
 ) -> dict:
-    """Return the document structure so the calling agent can identify Q/A pairs.
+    """Return the document structure for Q/A pair identification.
 
-    Word: full <w:body> XML.  Excel: JSON of sheets/rows/cells.  PDF: list of
-    fillable field names, types, and current values.
+    Word: full <w:body> XML. Excel: JSON sheets/rows/cells. PDF: field list.
+    Use on the form being filled, not reference documents.
 
-    Use this on the form/questionnaire you want to fill. For reference or
-    knowledge documents, the agent should read them using its own file
-    tools, not this MCP tool.
-
-    file_path: path to the document on disk (preferred for interactive use).
-    file_bytes_b64: base64-encoded file bytes (for programmatic use).
+    file_path: path on disk (preferred). file_bytes_b64: base64 (programmatic).
     """
     raw, ft = resolve_file_for_tool(
         "extract_structure",
@@ -133,8 +124,9 @@ def validate_locations(
 ) -> dict:
     """Confirm that each location snippet actually exists in the document.
 
-    Returns match status and XPath/reference for each snippet.
-    Use on the form being filled, not on reference documents.
+    Returns match status and XPath/reference for each snippet. If a table
+    cell contains existing text, context includes a WARNING suggesting the
+    likely answer cell. This is advisory, not a hard block.
 
     locations: list of {pair_id, snippet} dicts.
     """

@@ -72,12 +72,15 @@ def get_formatting_hints(element: etree._Element, text: str) -> list[str]:
     return hints
 
 
+def is_answer_target(text: str) -> bool:
+    """Return True if text indicates an answer target (empty or placeholder)."""
+    stripped = text.strip()
+    return not stripped or bool(PLACEHOLDER_RE.search(stripped))
+
+
 def get_target_marker(text: str) -> str:
     """Return an answer target marker if text is empty or a placeholder."""
-    stripped = text.strip()
-    if not stripped:
-        return " ← answer target"
-    if PLACEHOLDER_RE.search(stripped):
+    if is_answer_target(text):
         return " ← answer target"
     return ""
 

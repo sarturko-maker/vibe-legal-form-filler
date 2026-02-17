@@ -40,6 +40,7 @@ from src.handlers.word_element_analysis import (
     get_formatting_hints,
     get_target_marker,
     get_text,
+    is_answer_target,
 )
 
 
@@ -102,11 +103,35 @@ def _index_table(
     rows = tbl.findall("w:tr", NAMESPACES)
     for r_idx, row in enumerate(rows, start=1):
         cells = row.findall("w:tc", NAMESPACES)
+        cell_roles = _detect_row_roles(cells)
         for c_idx, cell in enumerate(cells, start=1):
             element_id = f"T{tbl_num}-R{r_idx}-C{c_idx}"
             xpath = build_xpath(cell, body)
             id_to_xpath[element_id] = xpath
-            _index_cell(cell, element_id, lines, complex_elements)
+            _index_cell(cell, element_id, lines, complex_elements,
+                        role=cell_roles.get(c_idx))
+
+
+def _detect_row_roles(cells: list[etree._Element]) -> dict[int, str]:
+    """Detect question/answer roles for cells in a table row.
+
+    If a row has at least one answer target (empty/placeholder), mark
+    non-empty cells as 'question' and answer targets as 'answer'.
+    Rows with no answer targets (e.g. header rows) get no roles.
+
+    Returns a dict from 1-based column index to role string.
+    """
+    texts = {i: get_text(cell) for i, cell in enumerate(cells, start=1)}
+    has_answer = any(is_answer_target(t) for t in texts.values())
+    if not has_answer:
+        return {}
+    roles: dict[int, str] = {}
+    for col_idx, text in texts.items():
+        if is_answer_target(text):
+            roles[col_idx] = "answer"
+        else:
+            roles[col_idx] = "question"
+    return roles
 
 
 def _index_cell(
@@ -114,6 +139,7 @@ def _index_cell(
     element_id: str,
     lines: list[str],
     complex_elements: list[str],
+    role: str | None = None,
 ) -> None:
     """Build a compact line for a single table cell."""
     complex_type = detect_complex(cell)
@@ -127,6 +153,8 @@ def _index_cell(
 
     text = get_text(cell)
     hints = get_formatting_hints(cell, text)
+    if role:
+        hints.append(role)
     target_marker = get_target_marker(text)
     hint_str = f" [{', '.join(hints)}]" if hints else ""
     lines.append(f'{element_id}: "{text}"{hint_str}{target_marker}')

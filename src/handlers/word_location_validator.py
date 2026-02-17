@@ -33,11 +33,13 @@ from src.models import (
 )
 from src.xml_utils import NAMESPACES, SECURE_PARSER, find_snippet_in_body
 
+from src.handlers.word_element_analysis import get_text, is_answer_target
 from src.handlers.word_fields import _get_context_text
 from src.handlers.word_parser import get_body_xml
 
 # Matches element IDs from compact extraction: T1-R2-C2 or P5
 ELEMENT_ID_RE = re.compile(r"^(T\d+-R\d+-C\d+|P\d+)$")
+TABLE_CELL_RE = re.compile(r"^T(\d+)-R(\d+)-C(\d+)$")
 
 
 def _is_element_id(snippet: str) -> bool:
@@ -93,12 +95,59 @@ def _validate_element_id(
     context = ""
     if matched:
         context = _get_context_text(matched[0])
+    warning = _check_question_cell_warning(
+        element_id, matched[0] if matched else None, id_to_xpath
+    )
+    if warning:
+        context = f"{warning}\n{context}" if context else warning
     return ValidatedLocation(
         pair_id=loc.pair_id,
         status=LocationStatus.MATCHED,
         xpath=xpath,
         context=context,
     )
+
+
+def _check_question_cell_warning(
+    element_id: str,
+    element: etree._Element | None,
+    id_to_xpath: dict[str, str],
+) -> str:
+    """Warn if a table cell contains text and looks like a question, not an answer.
+
+    Returns a warning string, or empty string if no concern.
+    """
+    if element is None:
+        return ""
+    match = TABLE_CELL_RE.match(element_id)
+    if not match:
+        return ""
+    text = get_text(element)
+    if is_answer_target(text):
+        return ""
+
+    tbl, row, col = match.group(1), match.group(2), match.group(3)
+    preview = text[:60] + ("..." if len(text) > 60 else "")
+    suggestion = _suggest_answer_cell(tbl, row, col, id_to_xpath)
+    msg = (
+        f"WARNING: {element_id} contains existing text: "
+        f"'{preview}' — this looks like a question cell, "
+        f"not an answer target."
+    )
+    if suggestion:
+        msg += f" Did you mean {suggestion}?"
+    return msg
+
+
+def _suggest_answer_cell(
+    tbl: str, row: str, col: str, id_to_xpath: dict[str, str]
+) -> str:
+    """Suggest the next cell in the same row as a likely answer target."""
+    next_col = int(col) + 1
+    candidate = f"T{tbl}-R{row}-C{next_col}"
+    if candidate in id_to_xpath:
+        return candidate
+    return ""
 
 
 def _validate_snippet(

@@ -90,18 +90,30 @@ def write_answers(
     file_path: str = "",
     output_file_path: str = "",
     answers_file_path: str = "",
+    dry_run: bool = False,
 ) -> dict:
     """Write all answers into the document and return the completed file bytes.
 
     file_path: path to the document on disk (preferred for interactive use).
     file_bytes_b64: base64-encoded file bytes (for programmatic use).
-    answers: list of {pair_id, xpath, insertion_xml, mode} dicts.
+    answers: list of answer dicts. Each answer must have pair_id, xpath, mode,
+        and exactly one of:
+        - answer_text: plain text answer (recommended — server builds the XML
+          internally, inheriting formatting from the target element). No need
+          to call build_insertion_xml first.
+        - insertion_xml: pre-built OOXML (legacy path — use when you already
+          called build_insertion_xml or need structured XML like checkboxes).
     answers_file_path: path to a JSON file containing the answers array.
         Use this instead of inline answers for large payloads (>20 answers)
         to avoid overwhelming the agent's context window.
     output_file_path: when provided, writes result to disk instead of returning b64.
+    dry_run: when True, resolves all targets and returns a preview showing
+        current cell content alongside what would be written, without modifying
+        the document. Use this to catch 'right answer, wrong cell' errors
+        before committing. Default: False.
 
     Returns {file_bytes_b64: ...} or {file_path: ...} when output_file_path is set.
+    When dry_run=True, returns {preview: [...]} instead.
     """
     raw, ft = resolve_file_for_tool(
         "write_answers",
@@ -110,6 +122,9 @@ def write_answers(
 
     answer_dicts = _resolve_answers_input(answers, answers_file_path)
     payloads = build_answer_payloads(answer_dicts, ft)
+
+    if dry_run:
+        return _dry_run_preview(raw, ft, payloads)
 
     if ft == FileType.WORD:
         result_bytes = word_handler.write_answers(raw, payloads)
@@ -129,6 +144,20 @@ def write_answers(
         return {"file_path": str(out)}
 
     return {"file_bytes_b64": base64.b64encode(result_bytes).decode()}
+
+
+def _dry_run_preview(
+    raw: bytes, ft: FileType, payloads: list
+) -> dict:
+    """Resolve all targets and return a preview without modifying the document."""
+    if ft == FileType.WORD:
+        from src.handlers.word_dry_run import preview_answers
+        previews = preview_answers(raw, payloads)
+    else:
+        raise NotImplementedError(
+            f"dry_run not yet implemented for {ft.value}"
+        )
+    return {"preview": previews, "dry_run": True}
 
 
 @mcp.tool()

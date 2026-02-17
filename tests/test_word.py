@@ -605,6 +605,105 @@ class TestWriteAnswersWithAnswerText:
         result = extract_structure(result_bytes)
         assert "Legacy Path" in result.body_xml
 
+    def test_parity_answer_text_vs_insertion_xml(self, table_docx: bytes) -> None:
+        """Fast path produces byte-identical XML to the old path for same input.
+
+        This is the parity test: same target, same answer text, both paths
+        must produce the same <w:r> element with the same formatting.
+        """
+        from src.handlers.word_writer import _build_insertion_xml_for_answer_text
+        from src.handlers.word_parser import read_document_xml
+        from src.xml_utils import SECURE_PARSER
+
+        xpath = "./w:tbl[1]/w:tr[2]/w:tc[2]/w:p[1]"
+        answer_text = "Parity Test Answer"
+
+        # Get the target element from the document
+        doc_xml = read_document_xml(table_docx)
+        root = etree.fromstring(doc_xml, SECURE_PARSER)
+        body = root.find("w:body", NAMESPACES)
+        target = body.xpath(xpath, namespaces=NAMESPACES)[0]
+
+        # Old path: extract_formatting from XML string → build_run_xml
+        target_xml = etree.tostring(target, encoding="unicode")
+        old_resp = build_insertion_xml(BuildInsertionXmlRequest(
+            answer_text=answer_text,
+            target_context_xml=target_xml,
+            answer_type=AnswerType.PLAIN_TEXT,
+        ))
+        old_xml = old_resp.insertion_xml
+
+        # Fast path: extract_formatting_from_element → build_run_xml
+        fast_xml = _build_insertion_xml_for_answer_text(target, answer_text)
+
+        assert old_xml == fast_xml, (
+            f"Parity failure!\nOld:  {old_xml}\nFast: {fast_xml}"
+        )
+
+    def test_answer_text_writes_to_correct_cell(self, table_docx: bytes) -> None:
+        """The fast path writes ONLY to the targeted cell, not adjacent cells.
+
+        Regression test: ensures the answer appears at the XPath target
+        and that neighbouring cells are untouched.
+        """
+        answer_xpath = "./w:tbl[1]/w:tr[2]/w:tc[2]/w:p[1]"
+        question_xpath = "./w:tbl[1]/w:tr[2]/w:tc[1]/w:p[1]"
+
+        # Get the original question text before writing
+        orig = extract_structure(table_docx)
+        orig_body = etree.fromstring(orig.body_xml.encode("utf-8"))
+        orig_q = orig_body.xpath(question_xpath, namespaces=NAMESPACES)[0]
+        orig_q_text = "".join(
+            t.text or "" for t in orig_q.iter(f"{{{W}}}t")
+        )
+
+        # Write using fast path
+        answers = [AnswerPayload(
+            pair_id="q1",
+            xpath=answer_xpath,
+            answer_text="Fast Path Answer",
+            mode=InsertionMode.REPLACE_CONTENT,
+        )]
+        result_bytes = write_answers(table_docx, answers)
+
+        # Verify answer landed in the right cell
+        result = extract_structure(result_bytes)
+        result_body = etree.fromstring(result.body_xml.encode("utf-8"))
+
+        target = result_body.xpath(answer_xpath, namespaces=NAMESPACES)[0]
+        target_text = "".join(
+            t.text or "" for t in target.iter(f"{{{W}}}t")
+        )
+        assert target_text == "Fast Path Answer"
+
+        # Verify the question cell was NOT modified
+        q_cell = result_body.xpath(question_xpath, namespaces=NAMESPACES)[0]
+        q_text = "".join(t.text or "" for t in q_cell.iter(f"{{{W}}}t"))
+        assert q_text == orig_q_text, (
+            f"Question cell was modified!\nBefore: {orig_q_text}\nAfter: {q_text}"
+        )
+
+    def test_answer_text_multiple_cells(self, table_docx: bytes) -> None:
+        """Fast path handles multiple answers in a single write_answers call."""
+        answers = [
+            AnswerPayload(
+                pair_id="q1",
+                xpath="./w:tbl[1]/w:tr[2]/w:tc[2]/w:p[1]",
+                answer_text="Answer One",
+                mode=InsertionMode.REPLACE_CONTENT,
+            ),
+            AnswerPayload(
+                pair_id="q2",
+                xpath="./w:tbl[1]/w:tr[3]/w:tc[2]/w:p[1]",
+                answer_text="Answer Two",
+                mode=InsertionMode.REPLACE_CONTENT,
+            ),
+        ]
+        result_bytes = write_answers(table_docx, answers)
+        result = extract_structure(result_bytes)
+        assert "Answer One" in result.body_xml
+        assert "Answer Two" in result.body_xml
+
 
 # ── Full pipeline test ───────────────────────────────────────────────────────
 
