@@ -156,7 +156,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. answer_text="SKIP" is recognized as intentional skip (no write, status="skipped" in response)
   4. Skipped fields are reported in write_answers summary with count (e.g., "42 written, 3 skipped")
   5. mode defaults to replace_content when answer_text is provided and mode is omitted
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 09-01-PLAN.md -- file_path echo, write_answers error, SKIP convention, response summary
 
 ### Phase 10: Verification Parity
 **Goal**: verify_output accepts pair_id without xpath, matching the write_answers capability so agents use the same identifiers for both tools
@@ -200,6 +202,6 @@ Decimal phases appear between their surrounding integers in numeric order.
 | 5. Fast Path Foundation | v2.0 | 2/2 | Complete | 2026-02-17 |
 | 6. Fast Path Implementation | v2.0 | 1/1 | Complete | 2026-02-17 |
 | 8. Resolution Infrastructure | v2.1 | Complete    | 2026-02-17 | - |
-| 9. Ergonomics & Tolerance | v2.1 | 0/? | Not started | - |
+| 9. Ergonomics & Tolerance | v2.1 | 0/1 | Planned | - |
 | 10. Verification Parity | v2.1 | 0/? | Not started | - |
 | 11. Documentation & QA | v2.1 | 0/? | Not started | - |
