@@ -37,7 +37,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Milestone Goal:** Fix cross-platform agent ergonomics issues discovered during Gemini CLI testing — make the fast path truly zero-friction by resolving xpaths from pair_ids, defaulting modes, handling skips, and updating pipeline guidance.
 
 - [x] **Phase 8: Resolution Infrastructure** - pair_id→xpath resolution via re-extraction for write_answers, cross-check validation (completed 2026-02-17)
-- [ ] **Phase 9: Ergonomics & Tolerance** - file_path echo, improved error messages, SKIP convention, mode defaults
+- [x] **Phase 9: Ergonomics & Tolerance** - file_path echo, improved error messages, SKIP convention, mode defaults (completed 2026-02-17)
 - [ ] **Phase 10: Verification Parity** - verify_output accepts pair_id without xpath, cross-check logic
 - [ ] **Phase 11: Documentation & QA** - CLAUDE.md pipeline updates, test coverage, regression validation
 
@@ -156,7 +156,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. answer_text="SKIP" is recognized as intentional skip (no write, status="skipped" in response)
   4. Skipped fields are reported in write_answers summary with count (e.g., "42 written, 3 skipped")
   5. mode defaults to replace_content when answer_text is provided and mode is omitted
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 09-01-PLAN.md -- file_path echo, write_answers error, SKIP convention, response summary
 
@@ -202,6 +202,6 @@ Plans:
 | 5. Fast Path Foundation | v2.0 | 2/2 | Complete | 2026-02-17 |
 | 6. Fast Path Implementation | v2.0 | 1/1 | Complete | 2026-02-17 |
 | 8. Resolution Infrastructure | v2.1 | Complete    | 2026-02-17 | - |
-| 9. Ergonomics & Tolerance | v2.1 | 0/1 | Planned | - |
+| 9. Ergonomics & Tolerance | v2.1 | Complete    | 2026-02-17 | - |
 | 10. Verification Parity | v2.1 | 0/? | Not started | - |
 | 11. Documentation & QA | v2.1 | 0/? | Not started | - |
