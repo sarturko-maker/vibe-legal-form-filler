@@ -29,6 +29,8 @@ from src.server import (
     verify_output,
     write_answers,
 )
+from src.tool_errors import build_answer_payloads
+from src.models import FileType
 
 FIXTURES = Path(__file__).parent / "fixtures"
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -697,3 +699,132 @@ class TestTempFileCleanup:
         )
         assert out.exists()
         assert out.stat().st_size > 0
+
+
+# ── Phase 8: answer_text / insertion_xml Validation ────────────────────────
+
+
+class TestAnswerTextValidation:
+    """Tests for exactly-one-of semantics on answer_text/insertion_xml.
+
+    Covers: COMPAT-01 (existing callers), FAST-04 (both/neither rejection),
+    COMPAT-02 (mixed-mode batches), empty/whitespace handling, error format,
+    batch rejection, and relaxed (Excel/PDF) path.
+    """
+
+    WORD_BASE = {"pair_id": "q1", "xpath": "/w:body/w:tbl[1]", "mode": "replace_content"}
+
+    def test_insertion_xml_only_still_works(self) -> None:
+        """COMPAT-01: Existing callers sending insertion_xml continue working."""
+        payloads = build_answer_payloads(
+            [{**self.WORD_BASE, "insertion_xml": "<w:r/>"}],
+            ft=FileType.WORD,
+        )
+        assert len(payloads) == 1
+        assert payloads[0].insertion_xml == "<w:r/>"
+        assert payloads[0].answer_text is None
+
+    def test_answer_text_only_works(self) -> None:
+        """New fast path: answer_text without insertion_xml is accepted."""
+        payloads = build_answer_payloads(
+            [{**self.WORD_BASE, "answer_text": "Acme Corp"}],
+            ft=FileType.WORD,
+        )
+        assert len(payloads) == 1
+        assert payloads[0].answer_text == "Acme Corp"
+        assert payloads[0].insertion_xml is None
+
+    def test_rejects_both_fields_provided(self) -> None:
+        """FAST-04: Both answer_text and insertion_xml raises ValueError."""
+        with pytest.raises(ValueError, match="Both `answer_text` and `insertion_xml` provided"):
+            build_answer_payloads(
+                [{**self.WORD_BASE, "answer_text": "hello", "insertion_xml": "<w:r/>"}],
+                ft=FileType.WORD,
+            )
+
+    def test_rejects_neither_field_provided(self) -> None:
+        """FAST-04: Neither field raises ValueError."""
+        with pytest.raises(ValueError, match="Neither `answer_text` nor `insertion_xml` provided"):
+            build_answer_payloads(
+                [self.WORD_BASE.copy()],
+                ft=FileType.WORD,
+            )
+
+    def test_empty_string_treated_as_not_provided(self) -> None:
+        """User decision: empty strings are treated as not provided."""
+        with pytest.raises(ValueError, match="Neither"):
+            build_answer_payloads(
+                [{**self.WORD_BASE, "answer_text": "", "insertion_xml": ""}],
+                ft=FileType.WORD,
+            )
+
+    def test_whitespace_only_treated_as_not_provided(self) -> None:
+        """User decision: whitespace-only strings are treated as not provided."""
+        with pytest.raises(ValueError, match="Neither"):
+            build_answer_payloads(
+                [{**self.WORD_BASE, "answer_text": "   ", "insertion_xml": ""}],
+                ft=FileType.WORD,
+            )
+
+    def test_mixed_mode_batch_accepted(self) -> None:
+        """COMPAT-02: A batch mixing answer_text and insertion_xml passes."""
+        batch = [
+            {**self.WORD_BASE, "pair_id": "q1", "insertion_xml": "<w:r/>"},
+            {**self.WORD_BASE, "pair_id": "q2", "answer_text": "Plain text"},
+            {**self.WORD_BASE, "pair_id": "q3", "insertion_xml": "<w:r>more</w:r>"},
+        ]
+        payloads = build_answer_payloads(batch, ft=FileType.WORD)
+        assert len(payloads) == 3
+        assert payloads[0].insertion_xml == "<w:r/>"
+        assert payloads[1].answer_text == "Plain text"
+        assert payloads[2].insertion_xml == "<w:r>more</w:r>"
+
+    def test_batch_rejects_all_if_any_invalid(self) -> None:
+        """Batch rejection: one invalid answer rejects the entire batch."""
+        batch = [
+            {**self.WORD_BASE, "pair_id": "q1", "insertion_xml": "<w:r/>"},
+            {**self.WORD_BASE, "pair_id": "q2"},  # Neither field
+            {**self.WORD_BASE, "pair_id": "q3", "answer_text": "a", "insertion_xml": "b"},  # Both
+        ]
+        with pytest.raises(ValueError) as exc_info:
+            build_answer_payloads(batch, ft=FileType.WORD)
+        msg = str(exc_info.value)
+        assert "index 1" in msg
+        assert "index 2" in msg
+
+    def test_error_lists_all_invalid_not_just_first(self) -> None:
+        """Error header reports the correct count of invalid answers."""
+        batch = [
+            {**self.WORD_BASE, "pair_id": "q1", "insertion_xml": "<w:r/>"},
+            {**self.WORD_BASE, "pair_id": "q2"},  # Neither
+            {**self.WORD_BASE, "pair_id": "q3", "answer_text": "a", "insertion_xml": "b"},  # Both
+        ]
+        with pytest.raises(ValueError, match="2 invalid answer"):
+            build_answer_payloads(batch, ft=FileType.WORD)
+
+    def test_error_includes_pair_id_and_index(self) -> None:
+        """Error format includes pair_id and index for each invalid answer."""
+        with pytest.raises(ValueError, match=r"Answer 'q3' \(index 0\)"):
+            build_answer_payloads(
+                [{**self.WORD_BASE, "pair_id": "q3"}],
+                ft=FileType.WORD,
+            )
+
+    def test_relaxed_path_accepts_answer_text(self) -> None:
+        """COMPAT-02: Excel/PDF relaxed path accepts answer_text."""
+        payloads = build_answer_payloads(
+            [{"pair_id": "q1", "xpath": "S1-R2-C2", "answer_text": "Hello", "mode": "replace_content"}],
+            ft=FileType.EXCEL,
+        )
+        assert len(payloads) == 1
+        assert payloads[0].answer_text == "Hello"
+        # On relaxed path, insertion_xml is populated from answer_text fallback
+        assert payloads[0].insertion_xml == "Hello"
+
+    def test_relaxed_path_rejects_both_fields(self) -> None:
+        """Consistent validation: Excel path also rejects both fields."""
+        with pytest.raises(ValueError, match="Both `answer_text` and `insertion_xml` provided"):
+            build_answer_payloads(
+                [{"pair_id": "q1", "xpath": "S1-R2-C2", "answer_text": "x", "insertion_xml": "y", "mode": "replace_content"}],
+                ft=FileType.EXCEL,
+            )
