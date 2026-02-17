@@ -45,6 +45,18 @@ from src.validators import (
 )
 
 
+def _is_skip(payload) -> bool:
+    """Return True if the answer is an intentional SKIP.
+
+    Case-insensitive: "SKIP", "skip", "Skip" all match. The agent signals
+    that a field should be left blank by setting answer_text to "SKIP".
+    """
+    return (
+        payload.answer_text is not None
+        and payload.answer_text.strip().upper() == "SKIP"
+    )
+
+
 def _resolve_answers_input(
     answers: list[dict] | None,
     answers_file_path: str,
@@ -124,19 +136,39 @@ def write_answers(
     answer_dicts = _resolve_answers_input(answers, answers_file_path)
     payloads, warnings = build_answer_payloads(answer_dicts, ft, raw)
 
-    if dry_run:
-        return _dry_run_preview(raw, ft, payloads)
+    skipped = [p for p in payloads if _is_skip(p)]
+    to_write = [p for p in payloads if not _is_skip(p)]
 
-    if ft == FileType.WORD:
-        result_bytes = word_handler.write_answers(raw, payloads)
-    elif ft == FileType.EXCEL:
-        result_bytes = excel_handler.write_answers(raw, payloads)
-    elif ft == FileType.PDF:
-        result_bytes = pdf_handler.write_answers(raw, payloads)
+    if dry_run:
+        result = _dry_run_preview(raw, ft, to_write)
+        for p in skipped:
+            result["preview"].append({
+                "pair_id": p.pair_id,
+                "xpath": p.xpath,
+                "status": "skipped",
+                "message": "Intentional SKIP -- field will not be written",
+            })
+        result["summary"] = {
+            "written": len(to_write),
+            "skipped": len(skipped),
+        }
+        return result
+
+    if to_write:
+        if ft == FileType.WORD:
+            result_bytes = word_handler.write_answers(raw, to_write)
+        elif ft == FileType.EXCEL:
+            result_bytes = excel_handler.write_answers(raw, to_write)
+        elif ft == FileType.PDF:
+            result_bytes = pdf_handler.write_answers(raw, to_write)
+        else:
+            raise NotImplementedError(
+                f"write_answers not yet implemented for {ft.value}"
+            )
     else:
-        raise NotImplementedError(
-            f"write_answers not yet implemented for {ft.value}"
-        )
+        result_bytes = raw  # All answers skipped, return original
+
+    summary = {"written": len(to_write), "skipped": len(skipped)}
 
     if output_file_path:
         out = validate_path_safe(output_file_path)
@@ -145,11 +177,13 @@ def write_answers(
         response: dict = {"file_path": str(out)}
         if warnings:
             response["warnings"] = warnings
+        response["summary"] = summary
         return response
 
     response = {"file_bytes_b64": base64.b64encode(result_bytes).decode()}
     if warnings:
         response["warnings"] = warnings
+    response["summary"] = summary
     return response
 
 
