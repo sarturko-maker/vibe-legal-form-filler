@@ -1,8 +1,9 @@
-"""E2E tests for pair_id-only write_answers (resolution pipeline).
+"""E2E tests for pair_id-only resolution pipeline (write + verify).
 
-Tests that agents can call write_answers with just pair_id + answer_text
-(no xpath, no mode) and the server resolves everything automatically.
-Also tests cross-check warnings and backward compatibility.
+Tests that agents can call write_answers and verify_output with just
+pair_id + answer_text/expected_text (no xpath, no mode) and the server
+resolves everything automatically. Also tests cross-check warnings
+and backward compatibility.
 """
 
 from __future__ import annotations
@@ -172,3 +173,136 @@ class TestPairIdOnlyWrite:
         cell_value = ws.cell(row=2, column=2).value
         wb.close()
         assert cell_value == "Excel Corp", f"Expected 'Excel Corp', got '{cell_value}'"
+
+
+class TestPairIdOnlyVerify:
+    """Tests for pair_id-only verify_output (no xpath required)."""
+
+    @pytest.fixture
+    def docx_path(self) -> str:
+        return str(FIXTURES / "table_questionnaire.docx")
+
+    @pytest.fixture
+    def xlsx_path(self) -> str:
+        return str(FIXTURES / "vendor_assessment.xlsx")
+
+    @pytest.fixture
+    def filled_docx_path(self, docx_path: str, tmp_path: Path) -> str:
+        """Write an answer to a Word doc and return the filled file path."""
+        out = tmp_path / "filled.docx"
+        write_answers(
+            answers=[{"pair_id": "T1-R2-C2", "answer_text": "Acme Corp"}],
+            file_path=docx_path,
+            output_file_path=str(out),
+        )
+        return str(out)
+
+    @pytest.fixture
+    def filled_xlsx_path(self, xlsx_path: str, tmp_path: Path) -> str:
+        """Write an answer to an Excel doc and return the filled file path."""
+        out = tmp_path / "filled.xlsx"
+        write_answers(
+            answers=[{"pair_id": "S1-R2-C2", "answer_text": "Excel Corp"}],
+            file_path=xlsx_path,
+            output_file_path=str(out),
+        )
+        return str(out)
+
+    def test_verify_output_pair_id_only_word(
+        self, filled_docx_path: str
+    ) -> None:
+        """Verify with pair_id-only (no xpath) on a filled Word doc."""
+        result = verify_output(
+            expected_answers=[
+                {"pair_id": "T1-R2-C2", "expected_text": "Acme Corp"},
+            ],
+            file_path=filled_docx_path,
+        )
+        assert result["summary"]["matched"] == 1
+        assert result["summary"]["mismatched"] == 0
+
+        cr = result["content_results"][0]
+        assert cr["status"] == "matched"
+        assert cr["resolved_from"] == "pair_id"
+
+    def test_verify_output_pair_id_only_excel(
+        self, filled_xlsx_path: str
+    ) -> None:
+        """Verify with pair_id-only (no xpath) on a filled Excel doc."""
+        result = verify_output(
+            expected_answers=[
+                {"pair_id": "S1-R2-C2", "expected_text": "Excel Corp"},
+            ],
+            file_path=filled_xlsx_path,
+        )
+        assert result["summary"]["matched"] == 1
+        assert result["summary"]["mismatched"] == 0
+
+        cr = result["content_results"][0]
+        assert cr["status"] == "matched"
+        assert cr["resolved_from"] == "pair_id"
+
+    def test_verify_output_cross_check_warning(
+        self, filled_docx_path: str
+    ) -> None:
+        """Cross-check warns when xpath disagrees with pair_id resolution."""
+        # Get the real xpath for T1-R2-C2
+        compact = extract_structure_compact(file_path=filled_docx_path)
+        real_xpath = compact["id_to_xpath"]["T1-R2-C2"]
+
+        # Send a wrong xpath with the correct pair_id
+        wrong_xpath = "./w:tbl[99]/w:tr[99]/w:tc[99]"
+        result = verify_output(
+            expected_answers=[{
+                "pair_id": "T1-R2-C2",
+                "xpath": wrong_xpath,
+                "expected_text": "Acme Corp",
+            }],
+            file_path=filled_docx_path,
+        )
+
+        # Warnings should be present
+        assert "warnings" in result
+        assert len(result["warnings"]) > 0
+        assert "T1-R2-C2" in result["warnings"][0]
+        assert "differs" in result["warnings"][0]
+
+        # Answer still verifies correctly (resolved xpath used)
+        assert result["summary"]["matched"] == 1
+        cr = result["content_results"][0]
+        assert cr["status"] == "matched"
+        assert cr["resolved_from"] == "pair_id"
+
+    def test_verify_output_backward_compatible(
+        self, filled_docx_path: str
+    ) -> None:
+        """Verify with explicit xpath (old way) still works."""
+        compact = extract_structure_compact(file_path=filled_docx_path)
+        real_xpath = compact["id_to_xpath"]["T1-R2-C2"]
+
+        result = verify_output(
+            expected_answers=[{
+                "pair_id": "T1-R2-C2",
+                "xpath": real_xpath,
+                "expected_text": "Acme Corp",
+            }],
+            file_path=filled_docx_path,
+        )
+
+        assert result["summary"]["matched"] == 1
+        cr = result["content_results"][0]
+        assert cr["status"] == "matched"
+        assert cr["resolved_from"] == "xpath"
+
+    def test_verify_output_pair_id_not_found(
+        self, filled_docx_path: str
+    ) -> None:
+        """Non-existent pair_id raises ValueError with clear message."""
+        with pytest.raises(ValueError, match="could not be resolved"):
+            verify_output(
+                expected_answers=[{
+                    "pair_id": "T99-R99-C99",
+                    "expected_text": "Ghost Corp",
+                }],
+                file_path=filled_docx_path,
+            )

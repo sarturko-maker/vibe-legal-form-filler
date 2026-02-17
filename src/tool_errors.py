@@ -491,8 +491,13 @@ def validate_expected_answers(
                     f"extract_structure_compact to get current IDs."
                 )
             resolved_from_list.append("pair_id")
-        elif xpath and pair_id in resolved and resolved[pair_id] != xpath:
-            # Cross-check mismatch: pair_id takes precedence
+        elif (
+            xpath
+            and ft == FileType.WORD
+            and pair_id in resolved
+            and resolved[pair_id] != xpath
+        ):
+            # Cross-check mismatch (Word only): pair_id takes precedence
             xpath = resolved[pair_id]
             resolved_from_list.append("pair_id")
         elif xpath:

@@ -216,23 +216,36 @@ def verify_output(
 
     file_path: path to the filled document on disk.
     file_bytes_b64: base64-encoded file bytes (for programmatic use).
-    expected_answers: list of {pair_id, xpath, expected_text} dicts.
+    expected_answers: list of {pair_id, expected_text} dicts. xpath is optional --
+        when omitted, the server resolves it from pair_id via re-extraction.
+        When both xpath and pair_id are provided, the server cross-checks and
+        warns on mismatch (pair_id takes precedence).
     """
     raw, ft = resolve_file_for_tool(
         "verify_output",
         file_bytes_b64 or None, file_type or None, file_path or None,
     )
     answers, warnings, resolved_from_list = validate_expected_answers(
-        expected_answers
+        expected_answers, ft, raw
     )
 
     if ft == FileType.WORD:
-        return word_verify_output(raw, answers).model_dump()
-    if ft == FileType.EXCEL:
-        return excel_verify_output(raw, answers).model_dump()
-    if ft == FileType.PDF:
-        return pdf_verify_output(raw, answers).model_dump()
+        result = word_verify_output(raw, answers).model_dump()
+    elif ft == FileType.EXCEL:
+        result = excel_verify_output(raw, answers).model_dump()
+    elif ft == FileType.PDF:
+        result = pdf_verify_output(raw, answers).model_dump()
+    else:
+        raise NotImplementedError(
+            f"verify_output not yet implemented for {ft.value}"
+        )
 
-    raise NotImplementedError(
-        f"verify_output not yet implemented for {ft.value}"
-    )
+    # Inject resolved_from metadata into each content_result
+    for i, rf in enumerate(resolved_from_list):
+        if i < len(result["content_results"]):
+            result["content_results"][i]["resolved_from"] = rf
+
+    if warnings:
+        result["warnings"] = warnings
+
+    return result
