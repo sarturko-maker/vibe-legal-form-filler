@@ -8,16 +8,9 @@ An MCP server (Python, FastMCP) that provides deterministic form-filling tools f
 
 Agents fill forms correctly and fast — the server handles all deterministic document manipulation so agents never touch raw OOXML, and the pipeline completes in the fewest possible round-trips.
 
-## Current Milestone: v2.1 Gemini Consolidation
+## Latest Milestone: v2.1 Gemini Consolidation (shipped 2026-02-17)
 
-**Goal:** Fix cross-platform agent ergonomics issues discovered during Gemini CLI testing — make the fast path truly zero-friction by resolving xpaths from pair_ids, defaulting modes, handling skips, and updating pipeline guidance.
-
-**Target features:**
-- pair_id→xpath resolution in write_answers and verify_output (agents don't need to carry xpaths)
-- SKIP convention for intentionally blank fields (signatures, dates)
-- file_path echo in extract_structure_compact response
-- Style review step in CLAUDE.md pipeline guidance
-- Updated tool docstrings and error messages
+Delivered zero-friction fast path: agents send pair_id + answer_text only, server resolves xpath and mode automatically. SKIP convention for intentionally blank fields. 311 tests passing.
 
 ## Requirements
 
@@ -44,17 +37,18 @@ Agents fill forms correctly and fast — the server handles all deterministic do
 - ✓ Multi-line answer_text converts to `<w:br/>` elements (real and literal \n) — v2.0
 - ✓ Backward-compatible: insertion_xml path unchanged, mixed mode supported — v2.0
 - ✓ 281 tests passing after v2.0 — v2.0
+- ✓ pair_id→xpath resolution in write_answers and verify_output — v2.1
+- ✓ mode defaults to replace_content when answer_text provided — v2.1
+- ✓ SKIP convention for intentionally blank fields — v2.1
+- ✓ verify_output accepts pair_id without xpath — v2.1
+- ✓ extract_structure_compact echoes file_path in response — v2.1
+- ✓ Improved error messages referencing extract_structure_compact — v2.1
+- ✓ Style review step in CLAUDE.md pipeline — v2.1
+- ✓ 311 tests passing after v2.1 — v2.1
 
 ### Active
 
-- [ ] pair_id→xpath resolution in write_answers (no xpath needed with answer_text)
-- [ ] mode defaults to replace_content when answer_text provided
-- [ ] SKIP convention for intentionally blank fields
-- [ ] verify_output accepts pair_id without xpath
-- [ ] extract_structure_compact echoes file_path in response
-- [ ] Improved error messages referencing extract_structure_compact
-- [ ] Style review step in CLAUDE.md pipeline
-- [ ] All 281 existing tests pass after changes
+(No active requirements — next milestone TBD)
 
 ### Out of Scope
 
@@ -68,17 +62,17 @@ Agents fill forms correctly and fast — the server handles all deterministic do
 
 ## Context
 
-- The Gemini CLI cross-platform test proved the server works but a 30-question questionnaire takes 10+ minutes. The bottleneck is 30 individual build_insertion_xml calls before write_answers.
-- Excel and PDF paths are already fast — they skip build_insertion_xml entirely (plain values, not OOXML). Only Word has the bottleneck.
-- build_insertion_xml does two things: (1) extract formatting from target XML context, (2) wrap answer text in a `<w:r>` with inherited formatting. For plain_text answers (the common case), this is deterministic and could be done server-side during write.
-- The server already has all the XML utilities needed (xml_formatting.py, xml_formatting.py) — the question is where in the pipeline to invoke them.
-- Agents currently send target_context_xml to build_insertion_xml — this is XML they got from extract_structure (raw mode) or that the server could look up from the XPath during write.
+- Three milestones shipped: v1.0 (transports), v2.0 (fast path), v2.1 (ergonomics)
+- 311 tests across Word, Excel, PDF, HTTP transport, resolution, ergonomics
+- Codebase: ~4,500 LOC Python (src/), ~3,000 LOC tests
+- Agents can now fill a 30-question Word form with pair_id + answer_text only — no xpath, no mode, no build_insertion_xml calls
+- All three platforms verified: Claude Code (stdio), Gemini CLI (HTTP), Antigravity (HTTP)
 
 ## Constraints
 
 - **Language**: Python only
 - **License**: AGPL-3.0, open source
-- **Test regression**: All 281 existing tests must pass after every change
+- **Test regression**: All 311 tests must pass after every change
 - **File size**: No file over 200 lines
 - **Backward compatibility**: Existing agents using the current pipeline must not break
 - **Platform**: Runs locally on a Chromebook with Linux (Crostini)
@@ -93,7 +87,11 @@ Agents fill forms correctly and fast — the server handles all deterministic do
 | Custom uvicorn runner for HTTP | Port pre-check and graceful shutdown timeout | ✓ Good |
 | Research round-trip reduction before committing to approach | Multiple valid strategies; trade-offs need evaluation | ✓ Good |
 | answer_text fast path (Approach A) over batch tool or removal | Simplest API change, backward compatible, no extra round-trips | ✓ Good |
-| Stateless pair_id resolution via re-extraction | Small perf cost but eliminates agent xpath bookkeeping | — Pending |
+| Stateless pair_id resolution via re-extraction | Small perf cost but eliminates agent xpath bookkeeping | ✓ Good |
+| Relaxed path for Excel/PDF uses pair_id as xpath directly | No re-extraction needed, pair_id IS the element ID | ✓ Good |
+| Cross-check warnings only on Word path | Excel/PDF pair_id and xpath are the same identifier | ✓ Good |
+| Dict injection after model_dump() for response augmentation | Avoids modifying Pydantic models for echo/metadata fields | ✓ Good |
+| SKIP filtering at tools_write.py level (not handler) | Keeps validation and routing separate | ✓ Good |
 
 ---
-*Last updated: 2026-02-17 after milestone v2.1 initialization*
+*Last updated: 2026-02-17 after v2.1 milestone*

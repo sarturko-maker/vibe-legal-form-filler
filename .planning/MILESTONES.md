@@ -38,3 +38,28 @@
 - Localhost-only binding for HTTP (no auth needed for v1)
 - Copilot Studio deferred (enterprise credentials not available)
 - Custom uvicorn runner for port pre-check and graceful shutdown
+
+## v2.1: Gemini Consolidation
+
+**Completed:** 2026-02-17
+**Phases:** 8–11
+**Requirements:** 17 (ERG-01–05, TOL-01–02, VER-01–02, PIPE-01–04, QA-01–04)
+
+**What shipped:**
+- pair_id→xpath resolution: agents send pair_id + answer_text only, server resolves xpath and mode
+- SKIP convention for intentionally blank fields (signatures, dates) with summary counts
+- file_path echo in extract_structure_compact and improved error messages
+- Cross-check validation when both xpath and pair_id provided (pair_id wins)
+- verify_output accepts pair_id without xpath, matching write_answers capability
+- 7-step CLAUDE.md pipeline with simplified fast-path agent guidance
+- 311 tests passing (30 new tests for v2.1 features)
+
+**Key decisions:**
+- Stateless pair_id resolution via re-extraction (small perf cost, eliminates agent bookkeeping)
+- Relaxed path for Excel/PDF uses pair_id as xpath directly (no re-extraction)
+- Cross-check warnings only on Word path (where xpath and pair_id are distinct systems)
+- Dict injection after model_dump() for response augmentation (avoids Pydantic model changes)
+- SKIP filtering at tools_write.py level after validation (keeps routing separate)
+
+---
+
