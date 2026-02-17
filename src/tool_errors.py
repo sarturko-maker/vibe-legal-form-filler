@@ -117,6 +117,12 @@ def resolve_file_for_tool(
     try:
         return resolve_file_input(file_bytes_b64, file_type, file_path)
     except ValueError as exc:
+        msg = str(exc)
+        if tool_name == "write_answers" and "Neither was supplied" in msg:
+            raise ValueError(
+                "Missing file_path -- this is the path you passed "
+                "to extract_structure_compact"
+            ) from exc
         example = USAGE.get(tool_name, tool_name)
         raise ValueError(
             f"{tool_name} error: {exc}\n"

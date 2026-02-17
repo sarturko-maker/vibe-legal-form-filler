@@ -71,15 +71,19 @@ def extract_structure_compact(
     )
 
     if ft == FileType.WORD:
-        return word_extract_compact(raw).model_dump()
-    if ft == FileType.EXCEL:
-        return excel_extract_compact(raw).model_dump()
-    if ft == FileType.PDF:
-        return pdf_extract_compact(raw).model_dump()
+        result = word_extract_compact(raw).model_dump()
+    elif ft == FileType.EXCEL:
+        result = excel_extract_compact(raw).model_dump()
+    elif ft == FileType.PDF:
+        result = pdf_extract_compact(raw).model_dump()
+    else:
+        raise NotImplementedError(
+            f"extract_structure_compact not yet implemented for {ft.value}"
+        )
 
-    raise NotImplementedError(
-        f"extract_structure_compact not yet implemented for {ft.value}"
-    )
+    if file_path:
+        result["file_path"] = file_path
+    return result
 
 
 @mcp.tool()
