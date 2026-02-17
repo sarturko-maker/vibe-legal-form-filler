@@ -24,7 +24,7 @@ The server handles the hard parts of document parsing (OOXML, spreadsheet cells,
 
 ## Key Design Principles
 
-- **No LLM in the server** — all AI reasoning lives with the calling agent. This server never makes LLM calls.
+- **No LLM in the server** — The server is a deterministic document tool, not an AI model. It reads, writes, and verifies — reliably and repeatably. The AI agent you already use (Claude, Gemini, Copilot, etc.) provides the intelligence and orchestrates the pipeline.
 - **Agent-agnostic** — works with any copilot agent that speaks MCP (Claude, GPT, custom agents).
 - **Privacy-first (BYOK)** — no data leaves the server. Your documents, your agent, your knowledge.
 - **Format-agnostic pipeline** — the same extract → validate → write → verify flow works across all supported formats.
