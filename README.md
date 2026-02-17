@@ -4,7 +4,7 @@ MCP server for AI-powered form filling across Word, Excel, and PDF documents.
 
 ## Vibe Coded
 
-This project was built entirely through "vibe coding" — an AI-assisted development approach where a non-programmer designed the architecture and directed implementation using AI tools. No line of code was written manually. The author is not a software engineer and makes no representations about code quality beyond the automated tests included in the repository.
+This project was built entirely through "vibe coding" — an AI-assisted development approach where a non-programmer designed the architecture and directed implementation using AI tools. No line of code was written manually. The author is not a software engineer and makes no representations about code quality.
 
 ## What It Does
 
