@@ -27,7 +27,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 **Milestone Goal:** Reduce MCP round-trips so a 30-question Word questionnaire completes in minutes instead of 10+, by eliminating the per-answer build_insertion_xml bottleneck.
 
-- [ ] **Phase 5: Fast Path Foundation** - Add answer_text field, formatting extraction function, validation, backward compatibility
+- [x] **Phase 5: Fast Path Foundation** - Add answer_text field, formatting extraction function, validation, backward compatibility (completed 2026-02-17)
 - [ ] **Phase 6: Fast Path Implementation** - Server builds insertion OOXML inline during write_answers for all insertion modes
 - [ ] **Phase 7: Verification and Documentation** - Parity tests, edge-case coverage, regression pass, agent guidance
 
@@ -101,7 +101,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Validation rejects answers that provide neither `answer_text` nor `insertion_xml`, returning a clear error message that names both fields
   4. Existing agents using `insertion_xml` alone continue working with zero changes (all 234 tests pass)
   5. An answer payload containing both `answer_text` and `insertion_xml` in the same write_answers call is accepted (mixed mode)
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 05-01-PLAN.md -- Model field changes (answer_text on AnswerPayload), extract_formatting_from_element function, parity tests
 - [ ] 05-02-PLAN.md -- Batch validation logic (exactly-one-of semantics, error aggregation), integration tests
@@ -139,6 +139,6 @@ Phases execute in numeric order: 5 -> 6 -> 7
 | 2. Protocol Implementation | v1.0 | 1/1 | Complete | 2026-02-16 |
 | 3. HTTP Integration Testing | v1.0 | 2/2 | Complete | 2026-02-16 |
 | 4. Cross-Platform Verification | v1.0 | 2/2 | Complete | 2026-02-17 |
-| 5. Fast Path Foundation | v2.0 | 0/2 | Planned | - |
+| 5. Fast Path Foundation | v2.0 | Complete    | 2026-02-17 | - |
 | 6. Fast Path Implementation | v2.0 | 0/? | Not started | - |
 | 7. Verification and Documentation | v2.0 | 0/? | Not started | - |
