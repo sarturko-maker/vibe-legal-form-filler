@@ -1,7 +1,7 @@
 # Requirements: Form Filler MCP Server
 
 **Defined:** 2026-02-17
-**Core Value:** Agents fill forms correctly and fast — fewest possible round-trips
+**Core Value:** Agents fill forms correctly and fast -- fewest possible round-trips
 
 ## v2.0 Requirements
 
@@ -59,24 +59,24 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FAST-01 | — | Pending |
-| FAST-02 | — | Pending |
-| FAST-03 | — | Pending |
-| FAST-04 | — | Pending |
-| FAST-05 | — | Pending |
-| COMPAT-01 | — | Pending |
-| COMPAT-02 | — | Pending |
-| QA-01 | — | Pending |
-| QA-02 | — | Pending |
-| QA-03 | — | Pending |
-| DOCS-01 | — | Pending |
-| DOCS-02 | — | Pending |
+| FAST-01 | Phase 6 | Pending |
+| FAST-02 | Phase 6 | Pending |
+| FAST-03 | Phase 6 | Pending |
+| FAST-04 | Phase 5 | Pending |
+| FAST-05 | Phase 5 | Pending |
+| COMPAT-01 | Phase 5 | Pending |
+| COMPAT-02 | Phase 5 | Pending |
+| QA-01 | Phase 7 | Pending |
+| QA-02 | Phase 7 | Pending |
+| QA-03 | Phase 7 | Pending |
+| DOCS-01 | Phase 7 | Pending |
+| DOCS-02 | Phase 7 | Pending |
 
 **Coverage:**
 - v2.0 requirements: 12 total
-- Mapped to phases: 0
-- Unmapped: 12
+- Mapped to phases: 12
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-17*
-*Last updated: 2026-02-17 after initial definition*
+*Last updated: 2026-02-17 after roadmap creation*
