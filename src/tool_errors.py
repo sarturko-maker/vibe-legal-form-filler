@@ -44,7 +44,7 @@ USAGE: dict[str, str] = {
     ),
     "write_answers": (
         'write_answers(file_path="form.docx", answers=[{"pair_id": "q1", '
-        '"xpath": "/w:body/...", "insertion_xml": "<w:r>...</w:r>", '
+        '"xpath": "/w:body/...", "answer_text": "Acme Corp", '
         '"mode": "replace_content"}])'
     ),
     "verify_output": (
@@ -52,6 +52,53 @@ USAGE: dict[str, str] = {
         '"q1", "xpath": "/w:body/...", "expected_text": "Acme Corp"}])'
     ),
 }
+
+
+def _is_provided(value: str | None) -> bool:
+    """Return True only if value is not None and has non-whitespace content.
+
+    This is the single source of truth for "is this field provided?" across
+    both answer_text and insertion_xml fields. Empty strings and
+    whitespace-only strings are treated as not provided.
+    """
+    return value is not None and value.strip() != ""
+
+
+def _validate_answer_text_xml_fields(answer_dicts: list[dict]) -> None:
+    """Enforce exactly-one-of semantics for answer_text/insertion_xml.
+
+    Iterates ALL answer dicts and collects errors (no short-circuiting).
+    If any errors exist, raises ValueError with all of them listed.
+    The 'value' key is also checked as an alias for insertion_xml
+    (used by the relaxed Excel/PDF path).
+    """
+    errors: list[str] = []
+    for i, a in enumerate(answer_dicts):
+        pair_id = a.get("pair_id", "<missing>")
+        has_answer_text = _is_provided(a.get("answer_text"))
+        has_insertion_xml = (
+            _is_provided(a.get("insertion_xml"))
+            or _is_provided(a.get("value"))
+        )
+        if has_answer_text and has_insertion_xml:
+            errors.append(
+                f"Answer '{pair_id}' (index {i}): Both `answer_text` and "
+                f"`insertion_xml` provided -- use one, not both. Use "
+                f"`answer_text` for plain text, `insertion_xml` for "
+                f"structured OOXML."
+            )
+        elif not has_answer_text and not has_insertion_xml:
+            errors.append(
+                f"Answer '{pair_id}' (index {i}): Neither `answer_text` "
+                f"nor `insertion_xml` provided. Use `answer_text` for "
+                f"plain text answers, `insertion_xml` for structured OOXML."
+            )
+    if errors:
+        raise ValueError(
+            f"write_answers validation failed "
+            f"({len(errors)} invalid answer(s)):\n"
+            + "\n".join(errors)
+        )
 
 
 def enum_values(enum_cls: type[Enum]) -> str:
@@ -128,9 +175,9 @@ def validate_answer_type(answer_type: str) -> AnswerType:
 
 # ── AnswerPayload (write_answers) wrapper ────────────────────────────────────
 
-_WORD_REQUIRED = ("pair_id", "xpath", "insertion_xml", "mode")
+_WORD_REQUIRED = ("pair_id", "xpath", "mode")
 _WORD_OPTIONAL = ("confidence",)
-_ALL_KNOWN_FIELDS = {*_WORD_REQUIRED, *_WORD_OPTIONAL}
+_ALL_KNOWN_FIELDS = {*_WORD_REQUIRED, *_WORD_OPTIONAL, "answer_text", "insertion_xml"}
 
 
 def build_answer_payloads(
@@ -143,7 +190,7 @@ def build_answer_payloads(
 
 
 def _build_word_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
-    """Word requires all four fields explicitly."""
+    """Word requires pair_id, xpath, mode plus exactly one of answer_text/insertion_xml."""
     results: list[AnswerPayload] = []
     for i, a in enumerate(answer_dicts):
         received = sorted(a.keys())
@@ -155,7 +202,7 @@ def _build_word_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
                 f"  Missing required: {missing}\n"
                 f"  Valid 'mode' values: {enum_values(InsertionMode)}\n"
                 f"  Required: pair_id (str), xpath (str), "
-                f"insertion_xml (str), mode (str)\n"
+                f"mode (str), plus answer_text or insertion_xml\n"
                 f"  Optional: confidence (str, default 'known') "
                 f"— valid: {enum_values(Confidence)}\n"
                 f"  Example: {USAGE['write_answers']}"
@@ -167,11 +214,15 @@ def _build_word_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
                 f"write_answers validation error in answers[{i}]:\n"
                 f"  Unexpected fields: {unexpected}\n"
                 f"  write_answers requires: pair_id, xpath, "
-                f"insertion_xml, mode\n"
+                f"mode, plus answer_text or insertion_xml\n"
                 f"  Optional: confidence\n"
                 f"  Example: {USAGE['write_answers']}"
             )
 
+    # Batch validation: exactly one of answer_text/insertion_xml per answer
+    _validate_answer_text_xml_fields(answer_dicts)
+
+    for i, a in enumerate(answer_dicts):
         try:
             mode = InsertionMode(a["mode"])
         except ValueError:
@@ -186,12 +237,14 @@ def _build_word_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
             results.append(AnswerPayload(
                 pair_id=a["pair_id"],
                 xpath=a["xpath"],
-                insertion_xml=a["insertion_xml"],
+                insertion_xml=a.get("insertion_xml"),
+                answer_text=a.get("answer_text"),
                 mode=mode,
                 **({"confidence": Confidence(a["confidence"])}
                    if "confidence" in a else {}),
             ))
         except ValueError as exc:
+            received = sorted(a.keys())
             raise ValueError(
                 f"write_answers validation error in answers[{i}]:\n"
                 f"  Received keys: {received}\n"
@@ -203,7 +256,14 @@ def _build_word_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
 
 
 def _build_relaxed_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
-    """Excel and PDF use relaxed field names (cell_id/field_id, value)."""
+    """Excel and PDF use relaxed field names (cell_id/field_id, value).
+
+    answer_text is accepted as an alias for value/insertion_xml on the
+    relaxed path, so Excel/PDF callers can use the same field name.
+    """
+    # Batch validation: exactly one of answer_text/insertion_xml/value per answer
+    _validate_answer_text_xml_fields(answer_dicts)
+
     results: list[AnswerPayload] = []
     for i, a in enumerate(answer_dicts):
         received = sorted(a.keys())
@@ -213,7 +273,7 @@ def _build_relaxed_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
                 f"  Received keys: {received}\n"
                 f"  Missing required: ['pair_id']\n"
                 f"  Required: pair_id (str), plus xpath/cell_id/field_id "
-                f"(str), value/insertion_xml (str)\n"
+                f"(str), value/insertion_xml/answer_text (str)\n"
                 f"  Example: {USAGE['write_answers']}"
             )
 
@@ -232,8 +292,11 @@ def _build_relaxed_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
             pair_id=a["pair_id"],
             xpath=a.get("xpath") or a.get("cell_id") or a.get("field_id", ""),
             insertion_xml=(
-                a.get("insertion_xml") or a.get("value", "")
+                a.get("insertion_xml")
+                or a.get("value")
+                or a.get("answer_text", "")
             ),
+            answer_text=a.get("answer_text"),
             mode=mode,
         ))
     return results
