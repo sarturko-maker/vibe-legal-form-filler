@@ -1,73 +1,86 @@
-# Vibe Legal Form Filler — Cross-Platform Transport & Enterprise Integration
+# Vibe Legal Form Filler
 
 ## What This Is
 
-An MCP server (Python, FastMCP) that provides deterministic form-filling tools for AI agents — extracting structure from Word/Excel/PDF documents, validating answer locations, writing answers, and verifying output. Currently works over stdio transport with Claude Code. This milestone adds Streamable HTTP transport so the server can be reached by HTTP-based platforms like Microsoft Copilot Studio, while keeping stdio working for existing clients.
+An MCP server (Python, FastMCP) that provides deterministic form-filling tools for AI agents — extracting structure from Word/Excel/PDF documents, validating answer locations, writing answers, and verifying output. Works over both stdio and Streamable HTTP transports. Used by Claude Code, Gemini CLI, and Antigravity.
 
 ## Core Value
 
-The server must work identically over both stdio and HTTP transports — same tools, same inputs, same outputs, no behavioral differences. An agent shouldn't know or care which transport it's using.
+Agents fill forms correctly and fast — the server handles all deterministic document manipulation so agents never touch raw OOXML, and the pipeline completes in the fewest possible round-trips.
+
+## Current Milestone: v2.0 Performance Optimization
+
+**Goal:** Reduce MCP round-trips so a 30-question questionnaire completes in minutes, not 10+, by eliminating the per-answer build_insertion_xml bottleneck.
+
+**Target features:**
+- Batch or inline XML generation to eliminate per-answer round-trips
+- Backward-compatible API (existing agents keep working)
+- Performance benchmarking to measure improvement
 
 ## Requirements
 
 ### Validated
 
-- ✓ Extract compact structure from Word (.docx) with stable element IDs — existing
-- ✓ Extract compact structure from Excel (.xlsx) with S-R-C IDs — existing
-- ✓ Extract compact structure from PDF (AcroForm) with sequential F-IDs — existing
-- ✓ Validate answer locations across all three formats — existing
-- ✓ Build insertion XML for Word answers with formatting inheritance — existing
-- ✓ Write answers to Word/Excel/PDF documents — existing
-- ✓ Verify output correctness and structural integrity — existing
-- ✓ Stateless MCP server over stdio transport (FastMCP) — existing
-- ✓ 172 unit tests passing across all formats — existing
-- ✓ Modular codebase (no file over 200 lines) — existing
+- ✓ Extract compact structure from Word (.docx) with stable element IDs — v1.0
+- ✓ Extract compact structure from Excel (.xlsx) with S-R-C IDs — v1.0
+- ✓ Extract compact structure from PDF (AcroForm) with sequential F-IDs — v1.0
+- ✓ Validate answer locations across all three formats — v1.0
+- ✓ Build insertion XML for Word answers with formatting inheritance — v1.0
+- ✓ Write answers to Word/Excel/PDF documents — v1.0
+- ✓ Verify output correctness and structural integrity — v1.0
+- ✓ Stateless MCP server over stdio transport (FastMCP) — v1.0
+- ✓ Streamable HTTP transport via --http flag — v1.0
+- ✓ MCP protocol compliance (headers, errors, version negotiation) — v1.0
+- ✓ Transport parity (identical behavior over stdio and HTTP) — v1.0
+- ✓ Cross-platform verified (Gemini CLI, Antigravity) — v1.0
+- ✓ Rich tool validation error messages for agent self-correction — v1.0
+- ✓ 234 tests passing across all formats and transports — v1.0
+- ✓ Modular codebase (no file over 200 lines) — v1.0
 
 ### Active
 
-- [ ] Add Streamable HTTP transport as built-in mode (flag to choose stdio vs HTTP)
-- [ ] Keep stdio transport working exactly as it does now
-- [ ] All 6 MCP tools work identically over both transports
-- [ ] Integration tests confirming transport parity (same tool, same input, same output over stdio and HTTP)
-- [ ] Cross-platform test: Gemini CLI completes full questionnaire pipeline
-- [ ] Cross-platform test: Antigravity completes full questionnaire pipeline
-- [ ] Setup documentation for each tested platform (Claude Code, Gemini CLI, Antigravity)
-- [ ] All 172 existing tests still pass after transport changes
+- [ ] Reduce round-trips for the build_insertion_xml → write_answers bottleneck
+- [ ] Agents can fill a 30-question Word form without calling build_insertion_xml per answer
+- [ ] Backward compatibility: existing agents using the current 5-step pipeline keep working
+- [ ] Performance benchmarking showing measurable improvement in total pipeline time
+- [ ] All 234 existing tests still pass after changes
 
 ### Out of Scope
 
-- API key authentication — v2 requirement for enterprise deployment behind corporate networks
-- Microsoft Copilot Studio connection — requires enterprise credentials and network access not available on personal Chromebook; separate follow-up milestone
+- API key authentication — separate enterprise milestone
+- Microsoft Copilot Studio connection — requires enterprise credentials
 - Node.js rewrite — Python only
 - Docker containerization — runs locally on Chromebook
 - Web UI or REST API — MCP protocol only
-- Any changes to core document processing logic
+- Changes to extract_structure or validate_locations (read-side tools are not the bottleneck)
+- Async/streaming within a single tool call — MCP tools are synchronous request/response
 
 ## Context
 
-- The server is already complete and working over stdio. All 6 MCP tools (extract_structure_compact, extract_structure, validate_locations, build_insertion_xml, write_answers, verify_output) plus utilities (extract_text, list_form_fields) are production-ready.
-- Microsoft Copilot Studio now supports MCP servers natively via Streamable HTTP transport — this is the primary motivation for adding HTTP.
-- The MCP Python SDK (FastMCP) likely already supports Streamable HTTP transport as a built-in option. Research needed to confirm API and configuration.
-- The server is stateless — each tool call is independent. This makes transport-layer changes clean since there's no session state to manage.
-- Gemini CLI and Antigravity are realistic cross-platform test targets available on a Chromebook.
-- The orchestration pipeline is agent-driven: extract → validate → build XML → write → verify. The MCP server provides tools; the agent drives the workflow.
+- The Gemini CLI cross-platform test proved the server works but a 30-question questionnaire takes 10+ minutes. The bottleneck is 30 individual build_insertion_xml calls before write_answers.
+- Excel and PDF paths are already fast — they skip build_insertion_xml entirely (plain values, not OOXML). Only Word has the bottleneck.
+- build_insertion_xml does two things: (1) extract formatting from target XML context, (2) wrap answer text in a `<w:r>` with inherited formatting. For plain_text answers (the common case), this is deterministic and could be done server-side during write.
+- The server already has all the XML utilities needed (xml_formatting.py, xml_formatting.py) — the question is where in the pipeline to invoke them.
+- Agents currently send target_context_xml to build_insertion_xml — this is XML they got from extract_structure (raw mode) or that the server could look up from the XPath during write.
 
 ## Constraints
 
-- **Language**: Python only — no Node.js, no TypeScript
+- **Language**: Python only
 - **License**: AGPL-3.0, open source
-- **Test regression**: All 172 existing tests must pass after every change
-- **File size**: No file over 200 lines (vibe coding maintenance principle)
+- **Test regression**: All 234 existing tests must pass after every change
+- **File size**: No file over 200 lines
+- **Backward compatibility**: Existing agents using the current pipeline must not break
 - **Platform**: Runs locally on a Chromebook with Linux (Crostini)
-- **Transport**: HTTP binds to localhost only (no auth needed for v1)
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Built-in transport mode (flag) over separate wrapper process | Simpler deployment, single process, no IPC complexity | — Pending |
-| Localhost-only binding for HTTP | Personal Chromebook use, no auth needed for v1 | — Pending |
-| Copilot Studio deferred to separate milestone | Requires enterprise credentials not available on personal device | — Pending |
+| Built-in transport mode (flag) over separate wrapper process | Simpler deployment, single process, no IPC complexity | ✓ Good |
+| Localhost-only binding for HTTP | Personal Chromebook use, no auth needed for v1 | ✓ Good |
+| Copilot Studio deferred to separate milestone | Requires enterprise credentials not available on personal device | ✓ Good |
+| Custom uvicorn runner for HTTP | Port pre-check and graceful shutdown timeout | ✓ Good |
+| Research round-trip reduction before committing to approach | Multiple valid strategies; trade-offs need evaluation | — Pending |
 
 ---
-*Last updated: 2026-02-16 after initialization*
+*Last updated: 2026-02-17 after milestone v2.0 initialization*
