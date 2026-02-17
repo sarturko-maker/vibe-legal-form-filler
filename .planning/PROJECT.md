@@ -8,14 +8,16 @@ An MCP server (Python, FastMCP) that provides deterministic form-filling tools f
 
 Agents fill forms correctly and fast — the server handles all deterministic document manipulation so agents never touch raw OOXML, and the pipeline completes in the fewest possible round-trips.
 
-## Current Milestone: v2.0 Performance Optimization
+## Current Milestone: v2.1 Gemini Consolidation
 
-**Goal:** Reduce MCP round-trips so a 30-question questionnaire completes in minutes, not 10+, by eliminating the per-answer build_insertion_xml bottleneck.
+**Goal:** Fix cross-platform agent ergonomics issues discovered during Gemini CLI testing — make the fast path truly zero-friction by resolving xpaths from pair_ids, defaulting modes, handling skips, and updating pipeline guidance.
 
 **Target features:**
-- Batch or inline XML generation to eliminate per-answer round-trips
-- Backward-compatible API (existing agents keep working)
-- Performance benchmarking to measure improvement
+- pair_id→xpath resolution in write_answers and verify_output (agents don't need to carry xpaths)
+- SKIP convention for intentionally blank fields (signatures, dates)
+- file_path echo in extract_structure_compact response
+- Style review step in CLAUDE.md pipeline guidance
+- Updated tool docstrings and error messages
 
 ## Requirements
 
@@ -36,14 +38,23 @@ Agents fill forms correctly and fast — the server handles all deterministic do
 - ✓ Rich tool validation error messages for agent self-correction — v1.0
 - ✓ 234 tests passing across all formats and transports — v1.0
 - ✓ Modular codebase (no file over 200 lines) — v1.0
+- ✓ Fast path: server builds OOXML from answer_text, eliminating build_insertion_xml round-trips — v2.0
+- ✓ Formatting inheritance identical to build_insertion_xml — v2.0
+- ✓ All three insertion modes work with answer_text — v2.0
+- ✓ Multi-line answer_text converts to `<w:br/>` elements (real and literal \n) — v2.0
+- ✓ Backward-compatible: insertion_xml path unchanged, mixed mode supported — v2.0
+- ✓ 281 tests passing after v2.0 — v2.0
 
 ### Active
 
-- [ ] Reduce round-trips for the build_insertion_xml → write_answers bottleneck
-- [ ] Agents can fill a 30-question Word form without calling build_insertion_xml per answer
-- [ ] Backward compatibility: existing agents using the current 5-step pipeline keep working
-- [ ] Performance benchmarking showing measurable improvement in total pipeline time
-- [ ] All 234 existing tests still pass after changes
+- [ ] pair_id→xpath resolution in write_answers (no xpath needed with answer_text)
+- [ ] mode defaults to replace_content when answer_text provided
+- [ ] SKIP convention for intentionally blank fields
+- [ ] verify_output accepts pair_id without xpath
+- [ ] extract_structure_compact echoes file_path in response
+- [ ] Improved error messages referencing extract_structure_compact
+- [ ] Style review step in CLAUDE.md pipeline
+- [ ] All 281 existing tests pass after changes
 
 ### Out of Scope
 
@@ -67,7 +78,7 @@ Agents fill forms correctly and fast — the server handles all deterministic do
 
 - **Language**: Python only
 - **License**: AGPL-3.0, open source
-- **Test regression**: All 234 existing tests must pass after every change
+- **Test regression**: All 281 existing tests must pass after every change
 - **File size**: No file over 200 lines
 - **Backward compatibility**: Existing agents using the current pipeline must not break
 - **Platform**: Runs locally on a Chromebook with Linux (Crostini)
@@ -80,7 +91,9 @@ Agents fill forms correctly and fast — the server handles all deterministic do
 | Localhost-only binding for HTTP | Personal Chromebook use, no auth needed for v1 | ✓ Good |
 | Copilot Studio deferred to separate milestone | Requires enterprise credentials not available on personal device | ✓ Good |
 | Custom uvicorn runner for HTTP | Port pre-check and graceful shutdown timeout | ✓ Good |
-| Research round-trip reduction before committing to approach | Multiple valid strategies; trade-offs need evaluation | — Pending |
+| Research round-trip reduction before committing to approach | Multiple valid strategies; trade-offs need evaluation | ✓ Good |
+| answer_text fast path (Approach A) over batch tool or removal | Simplest API change, backward compatible, no extra round-trips | ✓ Good |
+| Stateless pair_id resolution via re-extraction | Small perf cost but eliminates agent xpath bookkeeping | — Pending |
 
 ---
-*Last updated: 2026-02-17 after milestone v2.0 initialization*
+*Last updated: 2026-02-17 after milestone v2.1 initialization*

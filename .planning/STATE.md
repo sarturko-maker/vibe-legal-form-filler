@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-17)
 
 **Core value:** Agents fill forms correctly and fast -- fewest possible round-trips
-**Current focus:** Milestone v2.0 -- Phase 6: Fast Path Implementation
+**Current focus:** Milestone v2.1 -- Gemini Consolidation
 
 ## Current Position
 
-Phase: 6 of 7 (Fast Path Implementation)
-Plan: 1 of 1 in current phase (COMPLETE)
-Status: Phase 6 Complete
-Last activity: 2026-02-17 -- Completed 06-01 (fast path routing and tests for answer_text)
+Phase: Not started (defining requirements)
+Plan: --
+Status: Defining requirements
+Last activity: 2026-02-17 -- Milestone v2.1 started
 
-Progress: [########..] 86% (v1.0 complete, v2.0 phase 6 complete)
+Progress: [########..] 85% (v1.0 complete, v2.0 phases 5-6 complete, v2.1 starting)
 
 ## Performance Metrics
 
@@ -48,16 +48,10 @@ Progress: [########..] 86% (v1.0 complete, v2.0 phase 6 complete)
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- Research chose Approach A (answer_text field on AnswerPayload) over batch tool or build_insertion_xml removal
-- Fast path handles plain_text answers only; structured answers still use insertion_xml
-- Multi-line answer_text deferred to future milestone (PERF-03)
-- Made insertion_xml optional (str | None = None) alongside new answer_text field for backward compatibility
-- extract_formatting_from_element placed as primary extraction path; extract_formatting delegates to it
-- Empty strings and whitespace-only treated as "not provided" for answer_text/insertion_xml
-- Batch validation collects ALL errors before raising (no short-circuiting)
-- Entire batch rejected if any answer invalid (no partial writes)
-- Inlined answer_text check in word_writer.py instead of importing private _is_provided from tool_errors
-- Imported fast path functions through xml_utils barrel to keep consistent import pattern
+- v2.0 Phase 7 (QA/Docs) absorbed into v2.1 milestone -- overlapping scope
+- PERF-03 (multi-line answer_text) already implemented in v2.0 Phase 6 -- moved to validated
+- pair_id resolution will be stateless (re-extract on each call) to maintain server statelessness
+- SKIP convention chosen over empty-string semantics for intentional blanks
 
 ### Pending Todos
 
@@ -69,6 +63,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-17 (Phase 6 execution)
-Stopped at: Completed 06-01-PLAN.md (Phase 6 complete)
-Resume file: .planning/phases/07-qa-and-documentation/ (next phase)
+Last session: 2026-02-17 (v2.1 milestone initialization)
+Stopped at: Requirements defined, roadmap pending
+Resume file: .planning/ROADMAP.md
