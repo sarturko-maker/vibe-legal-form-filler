@@ -142,7 +142,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. When both xpath and pair_id are provided, server cross-checks and warns on mismatch (pair_id is authority)
   4. Cross-check warnings are logged but do not block writes (warning in response metadata)
   5. Resolution infrastructure reuses existing id_to_xpath logic from word_location_validator.py
-**Plans**: TBD
+**Plans:** 2 plans
+- [ ] 08-01-PLAN.md -- Create pair_id_resolver module, make AnswerPayload xpath/mode optional (TDD)
+- [ ] 08-02-PLAN.md -- Wire resolution into write path, add cross-check warnings, E2E tests
 
 ### Phase 9: Ergonomics & Tolerance
 **Goal**: Small API improvements that reduce agent friction — file_path echo, better errors, SKIP convention, mode defaults
