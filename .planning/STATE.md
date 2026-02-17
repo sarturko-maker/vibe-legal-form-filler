@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-17)
 
 **Core value:** Agents fill forms correctly and fast -- fewest possible round-trips
-**Current focus:** Milestone v2.0 -- Phase 5: Fast Path Foundation
+**Current focus:** Milestone v2.0 -- Phase 6: Fast Path Implementation
 
 ## Current Position
 
-Phase: 5 of 7 (Fast Path Foundation)
-Plan: 2 of 2 in current phase (COMPLETE)
-Status: Phase 5 Complete
-Last activity: 2026-02-17 -- Completed 05-02 (batch validation for answer_text/insertion_xml)
+Phase: 6 of 7 (Fast Path Implementation)
+Plan: 1 of 1 in current phase (COMPLETE)
+Status: Phase 6 Complete
+Last activity: 2026-02-17 -- Completed 06-01 (fast path routing and tests for answer_text)
 
-Progress: [#######...] 71% (v1.0 complete, v2.0 phase 5 complete)
+Progress: [########..] 86% (v1.0 complete, v2.0 phase 6 complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 8 (6 v1.0 + 2 v2.0)
-- Average duration: 2.3 min
-- Total execution time: 0.29 hours
+- Total plans completed: 9 (6 v1.0 + 3 v2.0)
+- Average duration: 2.2 min
+- Total execution time: 0.33 hours
 
 **By Phase (v1.0):**
 
@@ -37,6 +37,7 @@ Progress: [#######...] 71% (v1.0 complete, v2.0 phase 5 complete)
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 05-fast-path-foundation | 2 | 4 min | 2 min |
+| 06-fast-path-implementation | 1 | 2 min | 2 min |
 
 *Updated after each plan completion*
 
@@ -55,6 +56,8 @@ Recent decisions affecting current work:
 - Empty strings and whitespace-only treated as "not provided" for answer_text/insertion_xml
 - Batch validation collects ALL errors before raising (no short-circuiting)
 - Entire batch rejected if any answer invalid (no partial writes)
+- Inlined answer_text check in word_writer.py instead of importing private _is_provided from tool_errors
+- Imported fast path functions through xml_utils barrel to keep consistent import pattern
 
 ### Pending Todos
 
@@ -66,6 +69,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-17 (Phase 5 execution)
-Stopped at: Completed 05-02-PLAN.md (Phase 5 complete)
-Resume file: .planning/phases/06-fast-path-implementation/ (next phase)
+Last session: 2026-02-17 (Phase 6 execution)
+Stopped at: Completed 06-01-PLAN.md (Phase 6 complete)
+Resume file: .planning/phases/07-qa-and-documentation/ (next phase)
