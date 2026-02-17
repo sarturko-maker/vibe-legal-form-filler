@@ -496,6 +496,119 @@ class TestListFormFields:
 # ── Full pipeline test ───────────────────────────────────────────────────────
 
 
+# ── write_answers with answer_text (fast path) ─────────────────────────────
+
+
+class TestWriteAnswersWithAnswerText:
+    """Test the fast path: write_answers with answer_text instead of insertion_xml."""
+
+    def test_replace_content_with_answer_text(self, table_docx: bytes) -> None:
+        """answer_text with replace_content inserts text into the target cell."""
+        xpath = "./w:tbl[1]/w:tr[2]/w:tc[2]/w:p[1]"
+        answers = [AnswerPayload(
+            pair_id="q1",
+            xpath=xpath,
+            answer_text="Acme Corporation",
+            mode=InsertionMode.REPLACE_CONTENT,
+        )]
+
+        result_bytes = write_answers(table_docx, answers)
+
+        result = extract_structure(result_bytes)
+        assert "Acme Corporation" in result.body_xml
+
+    def test_append_with_answer_text(self, table_docx: bytes) -> None:
+        """answer_text with append adds text after existing content."""
+        # First write content into a cell, then append to it
+        xpath = "./w:tbl[1]/w:tr[2]/w:tc[2]/w:p[1]"
+        answers_setup = [AnswerPayload(
+            pair_id="q1",
+            xpath=xpath,
+            answer_text="Acme Corp",
+            mode=InsertionMode.REPLACE_CONTENT,
+        )]
+        filled_bytes = write_answers(table_docx, answers_setup)
+
+        # Now append
+        answers_append = [AnswerPayload(
+            pair_id="q1",
+            xpath=xpath,
+            answer_text=" (Amended)",
+            mode=InsertionMode.APPEND,
+        )]
+        result_bytes = write_answers(filled_bytes, answers_append)
+
+        result = extract_structure(result_bytes)
+        assert "(Amended)" in result.body_xml
+
+    def test_replace_placeholder_with_answer_text(
+        self, placeholder_docx: bytes
+    ) -> None:
+        """answer_text with replace_placeholder replaces [Enter here] text."""
+        # P4 is "Address: [Enter here]" — use the paragraph XPath
+        xpath = "./w:p[4]"
+        answers = [AnswerPayload(
+            pair_id="addr",
+            xpath=xpath,
+            answer_text="123 Security Lane, London",
+            mode=InsertionMode.REPLACE_PLACEHOLDER,
+        )]
+
+        result_bytes = write_answers(placeholder_docx, answers)
+
+        result = extract_structure(result_bytes)
+        assert "123 Security Lane, London" in result.body_xml
+
+    def test_formatting_inheritance(self, table_docx: bytes) -> None:
+        """Fast path inherits font family and size from the target element."""
+        # T1-R1-C1 header cell has bold + Calibri + sz=22
+        xpath = "./w:tbl[1]/w:tr[1]/w:tc[1]/w:p[1]"
+        answers = [AnswerPayload(
+            pair_id="hdr",
+            xpath=xpath,
+            answer_text="New Header",
+            mode=InsertionMode.REPLACE_CONTENT,
+        )]
+
+        result_bytes = write_answers(table_docx, answers)
+
+        result = extract_structure(result_bytes)
+        body = etree.fromstring(result.body_xml.encode("utf-8"))
+        target = body.xpath(xpath, namespaces=NAMESPACES)[0]
+        run = target.find(f".//{{{W}}}r")
+        assert run is not None
+        rpr = run.find(f"{{{W}}}rPr")
+        assert rpr is not None
+        rfonts = rpr.find(f"{{{W}}}rFonts")
+        assert rfonts is not None
+        assert rfonts.get(f"{{{W}}}ascii") == "Calibri"
+        # Bold should be inherited from the header cell
+        assert rpr.find(f"{{{W}}}b") is not None
+
+    def test_insertion_xml_still_works(self, table_docx: bytes) -> None:
+        """Existing insertion_xml callers continue working unchanged."""
+        xpath = "./w:tbl[1]/w:tr[2]/w:tc[2]/w:p[1]"
+        run_xml = (
+            f'<w:r xmlns:w="{W}"><w:rPr>'
+            f'<w:rFonts w:ascii="Calibri"/><w:sz w:val="20"/>'
+            f"</w:rPr><w:t>Legacy Path</w:t></w:r>"
+        )
+        answers = [AnswerPayload(
+            pair_id="q1",
+            xpath=xpath,
+            insertion_xml=run_xml,
+            mode=InsertionMode.REPLACE_CONTENT,
+        )]
+
+        result_bytes = write_answers(table_docx, answers)
+
+        result = extract_structure(result_bytes)
+        assert "Legacy Path" in result.body_xml
+
+
+# ── Full pipeline test ───────────────────────────────────────────────────────
+
+
 class TestFullPipeline:
     def test_extract_validate_build_write(self, table_docx: bytes) -> None:
         """Full pipeline: extract → validate → build → write."""
