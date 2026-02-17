@@ -716,17 +716,18 @@ class TestAnswerTextValidation:
 
     def test_insertion_xml_only_still_works(self) -> None:
         """COMPAT-01: Existing callers sending insertion_xml continue working."""
-        payloads = build_answer_payloads(
+        payloads, warnings = build_answer_payloads(
             [{**self.WORD_BASE, "insertion_xml": "<w:r/>"}],
             ft=FileType.WORD,
         )
         assert len(payloads) == 1
         assert payloads[0].insertion_xml == "<w:r/>"
         assert payloads[0].answer_text is None
+        assert warnings == []
 
     def test_answer_text_only_works(self) -> None:
         """New fast path: answer_text without insertion_xml is accepted."""
-        payloads = build_answer_payloads(
+        payloads, warnings = build_answer_payloads(
             [{**self.WORD_BASE, "answer_text": "Acme Corp"}],
             ft=FileType.WORD,
         )
@@ -773,7 +774,7 @@ class TestAnswerTextValidation:
             {**self.WORD_BASE, "pair_id": "q2", "answer_text": "Plain text"},
             {**self.WORD_BASE, "pair_id": "q3", "insertion_xml": "<w:r>more</w:r>"},
         ]
-        payloads = build_answer_payloads(batch, ft=FileType.WORD)
+        payloads, warnings = build_answer_payloads(batch, ft=FileType.WORD)
         assert len(payloads) == 3
         assert payloads[0].insertion_xml == "<w:r/>"
         assert payloads[1].answer_text == "Plain text"
@@ -812,7 +813,7 @@ class TestAnswerTextValidation:
 
     def test_relaxed_path_accepts_answer_text(self) -> None:
         """COMPAT-02: Excel/PDF relaxed path accepts answer_text."""
-        payloads = build_answer_payloads(
+        payloads, warnings = build_answer_payloads(
             [{"pair_id": "q1", "xpath": "S1-R2-C2", "answer_text": "Hello", "mode": "replace_content"}],
             ft=FileType.EXCEL,
         )

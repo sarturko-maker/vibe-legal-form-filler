@@ -96,13 +96,13 @@ def write_answers(
 
     file_path: path to the document on disk (preferred for interactive use).
     file_bytes_b64: base64-encoded file bytes (for programmatic use).
-    answers: list of answer dicts. Each answer must have pair_id, xpath, mode,
-        and exactly one of:
-        - answer_text: plain text answer (recommended — server builds the XML
-          internally, inheriting formatting from the target element). No need
-          to call build_insertion_xml first.
-        - insertion_xml: pre-built OOXML (legacy path — use when you already
-          called build_insertion_xml or need structured XML like checkboxes).
+    answers: list of answer dicts. Each answer must have pair_id and exactly
+        one of answer_text or insertion_xml:
+        - answer_text: plain text answer (recommended). xpath and mode are
+          optional -- the server resolves xpath from pair_id via re-extraction
+          and defaults mode to replace_content.
+        - insertion_xml: pre-built OOXML (legacy path). Requires explicit
+          xpath and mode.
     answers_file_path: path to a JSON file containing the answers array.
         Use this instead of inline answers for large payloads (>20 answers)
         to avoid overwhelming the agent's context window.
@@ -113,6 +113,7 @@ def write_answers(
         before committing. Default: False.
 
     Returns {file_bytes_b64: ...} or {file_path: ...} when output_file_path is set.
+    May include a 'warnings' key when pair_id cross-check detects mismatches.
     When dry_run=True, returns {preview: [...]} instead.
     """
     raw, ft = resolve_file_for_tool(
@@ -121,7 +122,7 @@ def write_answers(
     )
 
     answer_dicts = _resolve_answers_input(answers, answers_file_path)
-    payloads = build_answer_payloads(answer_dicts, ft)
+    payloads, warnings = build_answer_payloads(answer_dicts, ft, raw)
 
     if dry_run:
         return _dry_run_preview(raw, ft, payloads)
@@ -141,9 +142,15 @@ def write_answers(
         out = validate_path_safe(output_file_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(result_bytes)
-        return {"file_path": str(out)}
+        response: dict = {"file_path": str(out)}
+        if warnings:
+            response["warnings"] = warnings
+        return response
 
-    return {"file_bytes_b64": base64.b64encode(result_bytes).decode()}
+    response = {"file_bytes_b64": base64.b64encode(result_bytes).decode()}
+    if warnings:
+        response["warnings"] = warnings
+    return response
 
 
 def _dry_run_preview(

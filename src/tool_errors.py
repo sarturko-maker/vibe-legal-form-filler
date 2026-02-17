@@ -43,9 +43,8 @@ USAGE: dict[str, str] = {
         'list_form_fields(file_path="form.docx")'
     ),
     "write_answers": (
-        'write_answers(file_path="form.docx", answers=[{"pair_id": "q1", '
-        '"xpath": "/w:body/...", "answer_text": "Acme Corp", '
-        '"mode": "replace_content"}])'
+        'write_answers(file_path="form.docx", answers=[{"pair_id": "T1-R2-C2", '
+        '"answer_text": "Acme Corp"}])'
     ),
     "verify_output": (
         'verify_output(file_path="filled.docx", expected_answers=[{"pair_id": '
@@ -175,45 +174,77 @@ def validate_answer_type(answer_type: str) -> AnswerType:
 
 # ── AnswerPayload (write_answers) wrapper ────────────────────────────────────
 
-_WORD_REQUIRED = ("pair_id", "xpath", "mode")
-_WORD_OPTIONAL = ("confidence",)
-_ALL_KNOWN_FIELDS = {*_WORD_REQUIRED, *_WORD_OPTIONAL, "answer_text", "insertion_xml"}
+_ALL_KNOWN_FIELDS = {"pair_id", "xpath", "mode", "confidence", "answer_text", "insertion_xml"}
 
 
 def build_answer_payloads(
-    answer_dicts: list[dict], ft: FileType
-) -> list[AnswerPayload]:
-    """Build AnswerPayload list with rich errors per dict on failure."""
+    answer_dicts: list[dict],
+    ft: FileType,
+    file_bytes: bytes | None = None,
+) -> tuple[list[AnswerPayload], list[str]]:
+    """Build AnswerPayload list with rich errors per dict on failure.
+
+    Returns (payloads, warnings). Warnings are non-empty only when
+    cross-check detects a mismatch between agent xpath and resolved xpath.
+    """
     if ft == FileType.WORD:
-        return _build_word_payloads(answer_dicts)
-    return _build_relaxed_payloads(answer_dicts)
+        return _build_word_payloads(answer_dicts, file_bytes)
+    return _build_relaxed_payloads(answer_dicts, file_bytes)
 
 
-def _build_word_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
-    """Word requires pair_id, xpath, mode plus exactly one of answer_text/insertion_xml."""
-    results: list[AnswerPayload] = []
+def _resolve_if_needed(
+    answer_dicts: list[dict],
+    ft: FileType,
+    file_bytes: bytes | None,
+) -> tuple[dict[str, str], list[str]]:
+    """Delegate to pair_id_resolver.resolve_if_needed."""
+    from src.pair_id_resolver import resolve_if_needed
+    return resolve_if_needed(answer_dicts, ft, file_bytes, _is_provided)
+
+
+def _build_word_payloads(
+    answer_dicts: list[dict],
+    file_bytes: bytes | None = None,
+) -> tuple[list[AnswerPayload], list[str]]:
+    """Word requires pair_id plus exactly one of answer_text/insertion_xml.
+
+    When answer_text is provided, xpath and mode are optional (resolved
+    from pair_id and defaulted to replace_content). When insertion_xml
+    is provided, xpath and mode are still required.
+    """
+    # Per-answer required-field check (context-dependent)
     for i, a in enumerate(answer_dicts):
         received = sorted(a.keys())
-        missing = [f for f in _WORD_REQUIRED if f not in a]
-        if missing:
+        has_answer_text = _is_provided(a.get("answer_text"))
+        has_insertion_xml = _is_provided(a.get("insertion_xml"))
+
+        if "pair_id" not in a:
             raise ValueError(
                 f"write_answers validation error in answers[{i}]:\n"
                 f"  Received keys: {received}\n"
-                f"  Missing required: {missing}\n"
-                f"  Valid 'mode' values: {enum_values(InsertionMode)}\n"
-                f"  Required: pair_id (str), xpath (str), "
-                f"mode (str), plus answer_text or insertion_xml\n"
-                f"  Optional: confidence (str, default 'known') "
-                f"— valid: {enum_values(Confidence)}\n"
+                f"  Missing required: ['pair_id']\n"
                 f"  Example: {USAGE['write_answers']}"
             )
+
+        # insertion_xml path requires explicit xpath and mode
+        if has_insertion_xml and not has_answer_text:
+            missing = [f for f in ("xpath", "mode") if f not in a]
+            if missing:
+                raise ValueError(
+                    f"write_answers validation error in answers[{i}]:\n"
+                    f"  Received keys: {received}\n"
+                    f"  Missing required for insertion_xml path: {missing}\n"
+                    f"  insertion_xml requires explicit xpath and mode.\n"
+                    f"  Valid 'mode' values: {enum_values(InsertionMode)}\n"
+                    f"  Example: {USAGE['write_answers']}"
+                )
 
         unexpected = [k for k in a if k not in _ALL_KNOWN_FIELDS]
         if unexpected:
             raise ValueError(
                 f"write_answers validation error in answers[{i}]:\n"
                 f"  Unexpected fields: {unexpected}\n"
-                f"  write_answers requires: pair_id, xpath, "
+                f"  write_answers accepts: pair_id, xpath, "
                 f"mode, plus answer_text or insertion_xml\n"
                 f"  Optional: confidence\n"
                 f"  Example: {USAGE['write_answers']}"
@@ -222,21 +253,52 @@ def _build_word_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
     # Batch validation: exactly one of answer_text/insertion_xml per answer
     _validate_answer_text_xml_fields(answer_dicts)
 
+    # Resolve pair_ids to xpaths when needed
+    resolved, warnings = _resolve_if_needed(
+        answer_dicts, FileType.WORD, file_bytes
+    )
+
+    results: list[AnswerPayload] = []
     for i, a in enumerate(answer_dicts):
-        try:
-            mode = InsertionMode(a["mode"])
-        except ValueError:
-            raise ValueError(
-                f"write_answers validation error in answers[{i}]:\n"
-                f"  Invalid mode '{a['mode']}'.\n"
-                f"  Valid values: {enum_values(InsertionMode)}\n"
-                f"  Example: {USAGE['write_answers']}"
-            )
+        has_answer_text = _is_provided(a.get("answer_text"))
+        pair_id = a["pair_id"]
+
+        # Resolve xpath from pair_id when missing
+        xpath = a.get("xpath")
+        if not xpath and has_answer_text:
+            xpath = resolved.get(pair_id)
+            if not xpath:
+                raise ValueError(
+                    f"Answer '{pair_id}' (index {i}): No xpath provided "
+                    f"and pair_id could not be resolved. Re-extract with "
+                    f"extract_structure_compact to get current IDs."
+                )
+        elif xpath and pair_id in resolved:
+            # Cross-check already handled; use resolved xpath
+            if resolved[pair_id] != xpath:
+                xpath = resolved[pair_id]
+
+        # Default mode to replace_content for answer_text
+        mode_raw = a.get("mode")
+        if mode_raw is None and has_answer_text:
+            mode = InsertionMode.REPLACE_CONTENT
+        elif mode_raw is not None:
+            try:
+                mode = InsertionMode(mode_raw)
+            except ValueError:
+                raise ValueError(
+                    f"write_answers validation error in answers[{i}]:\n"
+                    f"  Invalid mode '{mode_raw}'.\n"
+                    f"  Valid values: {enum_values(InsertionMode)}\n"
+                    f"  Example: {USAGE['write_answers']}"
+                )
+        else:
+            mode = InsertionMode.REPLACE_CONTENT
 
         try:
             results.append(AnswerPayload(
-                pair_id=a["pair_id"],
-                xpath=a["xpath"],
+                pair_id=pair_id,
+                xpath=xpath,
                 insertion_xml=a.get("insertion_xml"),
                 answer_text=a.get("answer_text"),
                 mode=mode,
@@ -252,19 +314,22 @@ def _build_word_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
                 f"  Valid 'confidence' values: {enum_values(Confidence)}\n"
                 f"  Example: {USAGE['write_answers']}"
             ) from exc
-    return results
+    return results, warnings
 
 
-def _build_relaxed_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
+def _build_relaxed_payloads(
+    answer_dicts: list[dict],
+    file_bytes: bytes | None = None,
+) -> tuple[list[AnswerPayload], list[str]]:
     """Excel and PDF use relaxed field names (cell_id/field_id, value).
 
     answer_text is accepted as an alias for value/insertion_xml on the
     relaxed path, so Excel/PDF callers can use the same field name.
+    When xpath/cell_id/field_id is missing, resolves from pair_id.
     """
     # Batch validation: exactly one of answer_text/insertion_xml/value per answer
     _validate_answer_text_xml_fields(answer_dicts)
 
-    results: list[AnswerPayload] = []
     for i, a in enumerate(answer_dicts):
         received = sorted(a.keys())
         if "pair_id" not in a:
@@ -276,6 +341,19 @@ def _build_relaxed_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
                 f"(str), value/insertion_xml/answer_text (str)\n"
                 f"  Example: {USAGE['write_answers']}"
             )
+
+    # On the relaxed path (Excel/PDF), pair_id IS the element ID (S1-R2-C2 / F1)
+    # so resolution means using pair_id directly -- no re-extraction needed.
+    warnings: list[str] = []
+
+    results: list[AnswerPayload] = []
+    for i, a in enumerate(answer_dicts):
+        pair_id = a["pair_id"]
+
+        # Use provided xpath, or fall back to pair_id (which IS the element ID)
+        xpath = a.get("xpath") or a.get("cell_id") or a.get("field_id", "")
+        if not xpath:
+            xpath = pair_id
 
         mode_raw = a.get("mode", InsertionMode.REPLACE_CONTENT.value)
         try:
@@ -289,8 +367,8 @@ def _build_relaxed_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
             )
 
         results.append(AnswerPayload(
-            pair_id=a["pair_id"],
-            xpath=a.get("xpath") or a.get("cell_id") or a.get("field_id", ""),
+            pair_id=pair_id,
+            xpath=xpath,
             insertion_xml=(
                 a.get("insertion_xml")
                 or a.get("value")
@@ -299,7 +377,7 @@ def _build_relaxed_payloads(answer_dicts: list[dict]) -> list[AnswerPayload]:
             answer_text=a.get("answer_text"),
             mode=mode,
         ))
-    return results
+    return results, warnings
 
 
 # ── ExpectedAnswer (verify_output) wrapper ───────────────────────────────────
