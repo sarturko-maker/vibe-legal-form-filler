@@ -85,13 +85,29 @@ STEP 4: DRY RUN (MCP tool — optional, recommended)
           'error' (XPath not found).
 
 STEP 5: WRITE ANSWERS (MCP tool — deterministic)
-  Input:  document bytes, array of {xpath, insertion_xml} pairs
+  Input:  document bytes, array of answer dicts (pair_id + answer_text,
+          or legacy xpath + insertion_xml)
   Output: completed document bytes with all answers inserted
   Action: locates each target in the XML tree, inserts the answer,
           preserves all other document structure and formatting
+  SKIP:   Set answer_text to "SKIP" (case-insensitive) for fields that
+          should remain intentionally blank (signatures, dates, fields
+          the user will fill manually). SKIP answers are not written to
+          the document. The response summary reports written and skipped counts.
 
-STEP 6: VERIFY OUTPUT (MCP tool — deterministic)
-  Input:  filled document bytes, array of {pair_id, xpath, expected_text}
+STEP 6: STYLE REVIEW (agent-side -- not an MCP tool)
+  Action: Agent opens or re-extracts the filled document and reviews
+          formatting consistency. Check that inserted text matches the
+          document's existing font, size, and style. This is a visual
+          review step -- no MCP tool call needed.
+  Note:   This step is recommended but optional. The server inherits
+          formatting from target elements during write, so most answers
+          will match. Review catches edge cases (e.g., bold headers
+          that should not be bold in answers).
+
+STEP 7: VERIFY OUTPUT (MCP tool — deterministic)
+  Input:  filled document bytes, array of {pair_id, expected_text} dicts
+          (xpath is optional -- resolved from pair_id if omitted)
   Output: verification report with structural issues and content results
   Action: checks OOXML structural integrity (no bare w:r under w:tc,
           every w:tc has a w:p), then compares expected text vs actual
@@ -108,7 +124,34 @@ The MCP server has no knowledge layer. All knowledge sits with the copilot agent
 
 The agent combines all three sources when generating answers. The MCP server only sees the form document itself.
 
-### How the Calling Agent Orchestrates This
+### Simplified Pipeline (v2.1 fast path)
+
+For plain-text answers, agents need only `pair_id` and `answer_text` -- no xpath, no mode, no build_insertion_xml call. The server resolves everything automatically.
+
+```
+1. Agent calls extract_structure_compact(file_path="form.docx")
+   -> gets compact_text with element IDs and role indicators
+2. Agent identifies Q/A pairs from compact_text
+   -> for each [answer] cell, note the pair_id (e.g., T1-R2-C2)
+   -> generate the answer text from knowledge + user instructions
+   -> use "SKIP" for fields the user will fill manually (signatures, dates)
+3. Agent calls write_answers(file_path="form.docx", answers=[
+       {"pair_id": "T1-R2-C2", "answer_text": "Acme Corp"},
+       {"pair_id": "T1-R3-C2", "answer_text": "SKIP"},
+   ], dry_run=True) -> preview
+4. Agent calls write_answers(file_path="form.docx", answers=[...],
+       output_file_path="filled.docx") -> filled document
+5. Agent reviews style/formatting of filled document
+6. Agent calls verify_output(file_path="filled.docx",
+       expected_answers=[{"pair_id": "T1-R2-C2", "expected_text": "Acme Corp"}])
+   -> confirms all answers written correctly
+```
+
+No validate_locations, no build_insertion_xml, no xpath bookkeeping needed.
+The full pipeline (with validate_locations and build_insertion_xml) remains
+available for structured OOXML answers or agents that need snippet matching.
+
+### Full Pipeline (legacy path)
 
 ```
 1. User drops in: form document path + optional reference/knowledge documents + instructions
@@ -134,10 +177,11 @@ The agent combines all three sources when generating answers. The MCP server onl
 9. Agent calls write_answers(file_path="form.docx", output_file_path="filled.docx", ...)
    → filled document written to disk
    For large answer sets (>20), write answers to a JSON file and use answers_file_path.
-10. Agent calls verify_output(file_path="filled.docx", expected_answers=[...])
+10. Agent reviews style/formatting of filled document (STEP 6 — no MCP tool needed)
+11. Agent calls verify_output(file_path="filled.docx", expected_answers=[...])
    → confirms all answers were written correctly and structure is valid
    Include confidence field on each expected_answer for the summary report.
-11. Agent reports unknown questions to the user for manual completion.
+12. Agent reports unknown questions to the user for manual completion.
 ```
 
 ## MCP Tools
@@ -324,7 +368,17 @@ Preview response format (dry_run=True):
 }
 ```
 
-Each answer (Word):
+Fast-path answer (Word -- v2.1, recommended):
+```json
+{
+  "pair_id": "T1-R2-C2",
+  "answer_text": "Acme Corporation"
+}
+```
+
+When using `answer_text`, `xpath` and `mode` are optional -- the server resolves xpath from pair_id and defaults mode to `replace_content`.
+
+Each answer (Word -- legacy, with explicit xpath and insertion_xml):
 ```json
 {
   "pair_id": "q1",
@@ -371,6 +425,14 @@ Modes (Word):
 
 Returns the complete document as bytes with all answers inserted. When `output_file_path` is provided, writes the result to disk and returns the path instead of base64 bytes.
 
+The response always includes a `summary` dict: `{"written": N, "skipped": M}`.
+May include a `warnings` list when pair_id cross-check detects mismatches.
+
+**SKIP convention:** Set `answer_text` to `"SKIP"` (case-insensitive) for fields
+that should be left intentionally blank -- signatures, dates the signer fills in,
+or fields the user wants to complete manually. SKIP answers are not written to
+the document. The response summary reports the count of skipped fields.
+
 ### `verify_output(file_path | file_bytes_b64, file_type?, expected_answers[]) → verification_report`
 
 Post-write verification tool. Runs after `write_answers` to confirm the output document is structurally valid and all answers were written correctly.
@@ -378,12 +440,13 @@ Post-write verification tool. Runs after `write_answers` to confirm the output d
 Each expected_answer is:
 ```json
 {
-  "pair_id": "q1",
-  "xpath": "/w:body/w:tbl[2]/w:tr[3]/w:tc[2]",
+  "pair_id": "T1-R2-C2",
   "expected_text": "Acme Corporation",
   "confidence": "known"
 }
 ```
+
+`xpath` is optional -- when omitted, the server resolves it from `pair_id` via re-extraction. When both are provided, the server cross-checks and warns on mismatch (pair_id takes precedence). Response includes `resolved_from` metadata on each content result.
 
 **Structural validation** (Word):
 - No bare `<w:r>` directly under `<w:tc>` (runs must be inside paragraphs)
@@ -437,6 +500,7 @@ vibe-legal-form-filler/
 │   ├── tools_extract.py       # MCP tools: extract_compact, extract, validate, build_xml, list_fields
 │   ├── tools_write.py         # MCP tools: write_answers, verify_output
 │   ├── tool_errors.py         # Error handling: file resolution, payload validation
+│   ├── pair_id_resolver.py    # pair_id->xpath resolution via re-extraction
 │   ├── models.py              # Pydantic models for pairs, locations, answers
 │   ├── http_transport.py      # HTTP/SSE transport for MCP-over-HTTP
 │   ├── handlers/
@@ -481,6 +545,9 @@ vibe-legal-form-filler/
 │   ├── test_http_concurrency.py
 │   ├── test_http_errors.py
 │   ├── test_http_utilities.py
+│   ├── test_pair_id_resolver.py
+│   ├── test_resolution.py
+│   ├── test_ergonomics.py
 │   └── fixtures/              # sample forms for testing
 │       ├── table_questionnaire.docx
 │       ├── placeholder_form.docx
