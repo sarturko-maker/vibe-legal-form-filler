@@ -124,6 +124,10 @@ def write_answers(
         the document. Use this to catch 'right answer, wrong cell' errors
         before committing. Default: False.
 
+    SKIP convention: Set answer_text to "SKIP" (case-insensitive) for fields
+    that should remain blank. SKIP answers are excluded from writing. The
+    response summary reports written and skipped counts.
+
     Returns {file_bytes_b64: ...} or {file_path: ...} when output_file_path is set.
     May include a 'warnings' key when pair_id cross-check detects mismatches.
     When dry_run=True, returns {preview: [...]} instead.
