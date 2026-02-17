@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-17)
 
 **Core value:** Agents fill forms correctly and fast -- the server handles all deterministic document manipulation so agents never touch raw OOXML, and the pipeline completes in the fewest possible round-trips.
-**Current focus:** Phase 9 - Ergonomics & Tolerance
+**Current focus:** Phase 10 - Verification Parity -- COMPLETE
 
 ## Current Position
 
-Phase: 9 of 11 (Ergonomics & Tolerance) -- COMPLETE
+Phase: 10 of 11 (Verification Parity) -- COMPLETE
 Plan: 1 of 1 in current phase
 Status: Phase complete
-Last activity: 2026-02-17 -- completed 09-01-PLAN.md
+Last activity: 2026-02-17 -- completed 10-01-PLAN.md
 
-Progress: [#########.] 90% (8 of 8 completed phases across all milestones)
+Progress: [##########] 95% (9 of 9 completed phases across all milestones)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 12 (6 v1.0 + 3 v2.0 + 2 v2.1 + 1 v2.1-ergo)
-- Average duration: 2.8 min
-- Total execution time: 0.57 hours
+- Total plans completed: 13 (6 v1.0 + 3 v2.0 + 2 v2.1 + 1 v2.1-ergo + 1 v2.1-verify)
+- Average duration: 2.9 min
+- Total execution time: 0.63 hours
 
 **By Phase (v1.0):**
 
@@ -45,6 +45,7 @@ Progress: [#########.] 90% (8 of 8 completed phases across all milestones)
 |-------|-------|-------|----------|
 | 08-resolution-infrastructure | 2 | 10 min | 5 min |
 | 09-ergonomics-tolerance | 1 | 3 min | 3 min |
+| 10-verification-parity | 1 | 4 min | 4 min |
 
 *Updated after each plan completion*
 
@@ -65,6 +66,8 @@ Recent decisions affecting current work:
 - 09-01: Dict injection after model_dump() for file_path echo rather than modifying Pydantic model
 - 09-01: SKIP filtering at tools_write.py level after build_answer_payloads -- keeps validation and routing separate
 - 09-01: Summary always present in write_answers response even when skipped=0
+- 10-01: Cross-check mismatch override only on Word path (Excel/PDF skip per 08-02)
+- 10-01: resolved_from injected via dict after model_dump() to avoid modifying handler verifiers
 
 ### Pending Todos
 
@@ -72,11 +75,11 @@ None yet.
 
 ### Blockers/Concerns
 
-None. All 306 tests passing (295 existing + 11 from 09-01).
+None. All 311 tests passing (306 existing + 5 from 10-01).
 
 ## Session Continuity
 
 Last session: 2026-02-17
-Stopped at: Completed 09-01-PLAN.md (Phase 9 complete)
+Stopped at: Completed 10-01-PLAN.md (Phase 10 complete)
 Resume file: None
-Next action: Execute Phase 10
+Next action: Execute Phase 11
