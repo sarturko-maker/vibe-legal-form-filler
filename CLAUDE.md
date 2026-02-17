@@ -8,7 +8,7 @@ The typical use case: a company sets up a copilot agent with its institutional k
 
 The MCP server's job is strictly document manipulation. All knowledge — institutional and ad-hoc — lives with the agent.
 
-Supports Word (.docx), Excel (.xlsx), and PDF (fillable AcroForm). Word and Excel handlers are complete and MCP-verified. PDF is the final format.
+Supports Word (.docx), Excel (.xlsx), and PDF (fillable AcroForm). All three format handlers are complete and MCP-verified.
 
 ## Core Design Principle
 
@@ -48,6 +48,9 @@ STEP 1: EXTRACT STRUCTURE (MCP tool — deterministic)
     Output: JSON with compact_text (indexed human-readable representation),
             id_to_xpath (ID → XPath mapping), complex_elements (IDs needing raw XML)
     Note:   response is a few KB, not 134KB — safe for conversation context
+    Note:   table cells include role indicators: [question] for cells with
+            text, [answer] for empty/placeholder cells. Always write to
+            [answer] cells, never to [question] cells.
 
   Alternative: extract_structure (for agents with large context windows)
     Input:  form document bytes, file type
@@ -60,6 +63,9 @@ STEP 2: VALIDATE LOCATIONS (MCP tool — deterministic)
   Action: for IDs — looks up XPath from the id_to_xpath mapping
           for snippets — searches document XML for the snippet
           returns the XPath or element reference for each match
+  Safety: if a table cell contains existing text, the context field includes
+          a WARNING suggesting you may have targeted a question cell. Check
+          these warnings and switch to the suggested answer cell if needed.
 
 STEP 3: BUILD INSERTION XML (MCP tool — deterministic)
   Input:  answer text, target location context, answer_type
@@ -69,13 +75,22 @@ STEP 3: BUILD INSERTION XML (MCP tool — deterministic)
           for answer_type "structured" — the calling agent provides
           AI-generated OOXML which this tool validates only
 
-STEP 4: WRITE ANSWERS (MCP tool — deterministic)
+STEP 4: DRY RUN (MCP tool — optional, recommended)
+  Input:  same as write_answers, plus dry_run=True
+  Output: preview array showing current cell content vs what would be written
+  Action: resolves each XPath, reads existing content, flags warnings where
+          target cells already contain text. Does NOT modify the document.
+          Review the preview to catch "right answer, wrong cell" before
+          committing. Status is 'ok' (safe), 'warning' (has content), or
+          'error' (XPath not found).
+
+STEP 5: WRITE ANSWERS (MCP tool — deterministic)
   Input:  document bytes, array of {xpath, insertion_xml} pairs
   Output: completed document bytes with all answers inserted
   Action: locates each target in the XML tree, inserts the answer,
           preserves all other document structure and formatting
 
-STEP 5: VERIFY OUTPUT (MCP tool — deterministic)
+STEP 6: VERIFY OUTPUT (MCP tool — deterministic)
   Input:  filled document bytes, array of {pair_id, xpath, expected_text}
   Output: verification report with structural issues and content results
   Action: checks OOXML structural integrity (no bare w:r under w:tc,
@@ -89,7 +104,7 @@ The MCP server has no knowledge layer. All knowledge sits with the copilot agent
 
 - **Institutional knowledge** — loaded when the agent is configured (company policies, standard answers, corporate data, previous questionnaires). This is the agent's built-in context.
 - **User instructions** — provided at runtime ("our CEO is Jane Smith", "coverage limit is $10M"). The agent receives these directly.
-- **Additional documents** — if the user attaches reference files alongside the form, the agent can read them using its own file handling. The MCP server provides an optional `extract_text` utility to help parse non-trivial formats, but this is a convenience, not a core pipeline step.
+- **Additional documents** — if the user attaches reference files alongside the form, the agent can read them using its own file handling tools.
 
 The agent combines all three sources when generating answers. The MCP server only sees the form document itself.
 
@@ -103,19 +118,26 @@ The agent combines all three sources when generating answers. The MCP server onl
 3. Agent reads reference/knowledge documents using its own native file tools
    (not MCP tools). These provide the answers the agent will use.
 4. Agent reads compact_text → identifies question/answer pairs by element ID
-   (AI uses agent's institutional knowledge + reference docs to understand context)
+   IMPORTANT: Use the [question] and [answer] role indicators to pick targets.
+   Always write to [answer] cells, never to [question] cells.
 5. Agent calls validate_locations(file_path="form.docx", ...) → confirms IDs are real
+   CHECK: If any result.context contains "WARNING", the agent may have targeted a
+   question cell. Switch to the suggested answer cell before proceeding.
 6. Agent generates answers using: institutional knowledge + reference docs + user instructions
    For each question, assess confidence: "known", "uncertain", or "unknown".
    Do NOT include "unknown" answers in the write_answers call — leave those cells empty.
 7. Agent calls build_insertion_xml for each answer → gets OOXML to insert
-8. Agent calls write_answers(file_path="form.docx", output_file_path="filled.docx", ...)
+8. Agent calls write_answers(file_path="form.docx", ..., dry_run=True) → preview
+   RECOMMENDED: Review the preview to catch "right answer, wrong cell" errors.
+   Each preview item shows current_text vs would_write. If status is "warning",
+   the target cell already has content — confirm this is intentional.
+9. Agent calls write_answers(file_path="form.docx", output_file_path="filled.docx", ...)
    → filled document written to disk
    For large answer sets (>20), write answers to a JSON file and use answers_file_path.
-9. Agent calls verify_output(file_path="filled.docx", expected_answers=[...])
+10. Agent calls verify_output(file_path="filled.docx", expected_answers=[...])
    → confirms all answers were written correctly and structure is valid
    Include confidence field on each expected_answer for the summary report.
-10. Agent reports unknown questions to the user for manual completion.
+11. Agent reports unknown questions to the user for manual completion.
 ```
 
 ## MCP Tools
@@ -160,17 +182,19 @@ Example compact_text output:
 ```
 T1-R1-C1: "Company Name" [bold]
 T1-R1-C2: "" [empty, shaded] ← answer target
-T1-R2-C1: "Date of Incorporation"
-T1-R2-C2: "" [empty, shaded] ← answer target
+T1-R2-C1: "Date of Incorporation" [question]
+T1-R2-C2: "" [empty, shaded, answer] ← answer target
 P3: "Please describe your data security policies:" [bold]
 P4: "[Enter here]" [placeholder] ← answer target
 T2-R1-C1: "Coverage Type" [bold]
 T2-R1-C2: "Limit" [bold]
 T2-R1-C3: "Deductible" [bold]
-T2-R2-C1: "General Liability"
-T2-R2-C2: "" [empty] ← answer target
+T2-R2-C1: "General Liability" [question]
+T2-R2-C2: "" [empty, answer] ← answer target
 T2-R2-C3: COMPLEX(gridSpan=2): <w:tc>...</w:tc>
 ```
+
+Table cells include **role indicators**: `[question]` for cells with text in rows that also contain answer targets, and `[answer]` for the empty/placeholder cells. Header rows (all non-empty, like T1-R1 and T2-R1 above) get no roles. **Always target [answer] cells for writing, never [question] cells.**
 
 Example compact_text output (Excel):
 ```
@@ -220,17 +244,11 @@ For Excel: returns a JSON representation of sheets, rows, columns, merged cells,
 
 For PDF: returns a JSON list of all AcroForm fields with native field names, types, current values, page numbers, and options (for dropdowns/radio). Same data as compact but in structured form without the human-readable text or nearby context.
 
-### `extract_text(file_bytes, file_type) → text content` *(optional utility)*
-
-A convenience tool for when the agent needs to read an attached document that isn't the form itself — for example, if the user drops in a reference PDF alongside the questionnaire. Extracts plain text from Word, Excel, PDF, or TXT files.
-
-This is not part of the core pipeline. Most copilot agents can read files natively. This tool exists for agents that cannot, or for non-trivial formats where python-docx/openpyxl/PyMuPDF would do a better job than the agent's built-in file reader.
-
 ### `validate_locations(file_path | file_bytes_b64, file_type?, locations[]) → validated_locations[]`
 
 Each location is an element ID like `T1-R2-C2` (from compact extraction), an OOXML snippet (from raw extraction), a cell reference (Excel), or a field name (PDF).
 
-For Word with element IDs: looks up the XPath from the `id_to_xpath` mapping returned by `extract_structure_compact`. Returns match/no-match and the XPath. This is the fast path — no snippet searching needed.
+For Word with element IDs: looks up the XPath from the `id_to_xpath` mapping returned by `extract_structure_compact`. Returns match/no-match and the XPath. This is the fast path — no snippet searching needed. **Suspicious-write detection:** if the target cell contains existing text (suggesting a question cell, not an answer cell), the context field includes a `WARNING` with a suggestion for the likely answer cell (e.g., "Did you mean T1-R2-C2?"). This is advisory — some legitimate writes go to populated cells.
 
 For Word with OOXML snippets: searches the document XML for each snippet. Returns match/no-match and the XPath to the matched element. Handles minor whitespace differences. Flags ambiguous matches (snippet appears more than once).
 
@@ -291,7 +309,20 @@ For Excel: not needed — openpyxl writes cell values directly.
 
 For PDF: not needed — PyMuPDF writes field values directly via widget API.
 
-### `write_answers(file_path | file_bytes_b64, file_type?, answers[]?, answers_file_path?, output_file_path?) → filled_file_bytes`
+### `write_answers(file_path | file_bytes_b64, file_type?, answers[]?, answers_file_path?, output_file_path?, dry_run?) → filled_file_bytes`
+
+**`dry_run`** *(recommended before committing)* — when `True`, resolves all answer targets and returns a preview showing current cell content alongside what would be written, without modifying the document. Each preview item has `status`: `"ok"` (empty target), `"warning"` (target has content), or `"error"` (XPath not found). Use this to catch "right answer, wrong cell" before committing. Default: `False`.
+
+Preview response format (dry_run=True):
+```json
+{
+  "preview": [
+    {"pair_id": "q1", "xpath": "...", "current_text": "", "would_write": "Acme Corp", "mode": "replace_content", "status": "ok"},
+    {"pair_id": "q2", "xpath": "...", "current_text": "Company Name", "would_write": "Acme Corp", "mode": "replace_content", "status": "warning", "message": "Target already contains: 'Company Name'"}
+  ],
+  "dry_run": true
+}
+```
 
 Each answer (Word):
 ```json
@@ -400,11 +431,14 @@ vibe-legal-form-filler/
 ├── pyproject.toml
 ├── src/
 │   ├── __init__.py
-│   ├── server.py              # MCP server entry point — thin, imports tool modules, runs mcp
+│   ├── __main__.py            # Allow running as `python -m src`
+│   ├── server.py              # MCP server entry point — CLI parsing, transport dispatch
 │   ├── mcp_app.py             # FastMCP instance (shared across tool modules)
 │   ├── tools_extract.py       # MCP tools: extract_compact, extract, validate, build_xml, list_fields
 │   ├── tools_write.py         # MCP tools: write_answers, verify_output
+│   ├── tool_errors.py         # Error handling: file resolution, payload validation
 │   ├── models.py              # Pydantic models for pairs, locations, answers
+│   ├── http_transport.py      # HTTP/SSE transport for MCP-over-HTTP
 │   ├── handlers/
 │   │   ├── __init__.py
 │   │   ├── word.py            # Word handler: public API (extract, build XML, write, list fields)
@@ -415,6 +449,7 @@ vibe-legal-form-filler/
 │   │   ├── word_writer.py     # Answer insertion: XPath-based content replacement
 │   │   ├── word_fields.py     # Form field detection: empty cells, placeholders
 │   │   ├── word_verifier.py   # Post-write verification: structural + content checks
+│   │   ├── word_dry_run.py    # Dry-run preview: resolve targets without modifying document
 │   │   ├── excel.py           # Excel handler: extract, validate, write (thin entry point)
 │   │   ├── excel_indexer.py   # Compact extraction: walks sheets/rows/cells, assigns S-R-C IDs
 │   │   ├── excel_writer.py    # Answer insertion: writes cell values using openpyxl
@@ -422,8 +457,7 @@ vibe-legal-form-filler/
 │   │   ├── pdf.py             # PDF handler: thin entry point, delegates to sub-modules
 │   │   ├── pdf_indexer.py     # Compact extraction: walks AcroForm widgets, assigns F-IDs
 │   │   ├── pdf_writer.py      # Answer insertion: sets widget values via PyMuPDF
-│   │   ├── pdf_verifier.py    # Post-write verification: reads widget values and compares
-│   │   └── text_extractor.py  # Optional: extract plain text from any supported format
+│   │   └── pdf_verifier.py    # Post-write verification: reads widget values and compares
 │   ├── xml_utils.py           # OOXML re-export barrel (snippet matching, formatting, validation)
 │   ├── xml_snippet_matching.py # Core: snippet matching, XPath building, structural comparison
 │   ├── xml_formatting.py      # OOXML formatting extraction and run building
@@ -431,11 +465,22 @@ vibe-legal-form-filler/
 │   ├── validators.py          # Shared input validation (file type, path safety, size limits)
 │   └── verification.py        # Shared verification helpers (confidence counting, summaries)
 ├── tests/
+│   ├── conftest.py
 │   ├── test_word.py
+│   ├── test_word_indexer.py
 │   ├── test_word_verifier.py
 │   ├── test_excel.py
 │   ├── test_pdf.py
 │   ├── test_xml_utils.py
+│   ├── test_file_path.py
+│   ├── test_cell_safety.py
+│   ├── test_e2e_integration.py
+│   ├── e2e_word_test.py
+│   ├── test_http_protocol.py
+│   ├── test_http_transport_parity.py
+│   ├── test_http_concurrency.py
+│   ├── test_http_errors.py
+│   ├── test_http_utilities.py
 │   └── fixtures/              # sample forms for testing
 │       ├── table_questionnaire.docx
 │       ├── placeholder_form.docx
@@ -443,8 +488,6 @@ vibe-legal-form-filler/
 │       ├── simple_form.pdf         # text fields, checkbox, dropdown
 │       ├── multi_page_form.pdf     # fields across 3 pages
 │       └── prefilled_form.pdf      # some fields already have values
-└── docs/
-    └── ARCHITECTURE.md
 ```
 
 ## Phased Build Order
@@ -569,7 +612,7 @@ All XPath queries must use these prefixes. Snippet matching should normalise whi
 
 ## What NOT to Build
 
-- No web UI or REST API (MCP only)
+- No web UI or standalone REST API (MCP only — stdio and MCP-over-HTTP transports)
 - No Docker
 - No database or persistent storage
 - No authentication
