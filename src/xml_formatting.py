@@ -202,8 +202,9 @@ def _add_text_element(parent: etree._Element, text: str) -> None:
 def build_run_xml(text: str, formatting: dict) -> str:
     """Build a <w:r> element with the given text and inherited formatting.
 
-    When text contains newlines, splits on \\n and inserts <w:br/> elements
-    between segments — producing the same output as pressing Enter in Word.
+    Normalises both literal escaped '\\n' (backslash + n, as sent by some
+    LLMs like Gemini) and real newline characters (0x0A) into <w:br/>
+    elements, producing the same output as pressing Enter in Word.
 
     Returns a string of well-formed OOXML.
     """
@@ -216,7 +217,9 @@ def build_run_xml(text: str, formatting: dict) -> str:
         _apply_style_properties(rpr, formatting)
         _apply_size_and_color(rpr, formatting)
 
-    segments = text.split("\n")
+    # Normalise literal escaped '\n' (two chars) to real newline before split
+    normalised = text.replace("\\n", "\n")
+    segments = normalised.split("\n")
     _add_text_element(r_elem, segments[0])
     for segment in segments[1:]:
         etree.SubElement(r_elem, f"{{{w}}}br")

@@ -739,6 +739,38 @@ class TestWriteAnswersWithAnswerText:
         for t in t_elems:
             assert "\n" not in (t.text or "")
 
+    def test_escaped_newlines_produce_line_breaks(
+        self, table_docx: bytes
+    ) -> None:
+        """Literal backslash-n from Gemini becomes <w:br/>, not plain text."""
+        xpath = "./w:tbl[1]/w:tr[2]/w:tc[2]/w:p[1]"
+        # Raw string so \n stays as two characters (backslash + n)
+        answers = [AnswerPayload(
+            pair_id="q1",
+            xpath=xpath,
+            answer_text=r"25 Technology Park\nReading\nRG6 1PT",
+            mode=InsertionMode.REPLACE_CONTENT,
+        )]
+
+        result_bytes = write_answers(table_docx, answers)
+
+        result = extract_structure(result_bytes)
+        body = etree.fromstring(result.body_xml.encode("utf-8"))
+        target = body.xpath(xpath, namespaces=NAMESPACES)[0]
+        run = target.find(f".//{{{W}}}r")
+
+        t_elems = run.findall(f"{{{W}}}t")
+        br_elems = run.findall(f"{{{W}}}br")
+        assert len(t_elems) == 3
+        assert len(br_elems) == 2
+        assert t_elems[0].text == "25 Technology Park"
+        assert t_elems[1].text == "Reading"
+        assert t_elems[2].text == "RG6 1PT"
+
+        # No literal backslash-n in any text element
+        for t in t_elems:
+            assert "\\n" not in (t.text or "")
+
 
 # ── Full pipeline test ───────────────────────────────────────────────────────
 

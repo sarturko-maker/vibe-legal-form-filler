@@ -214,6 +214,28 @@ class TestBuildRunXml:
         assert len(elem.findall(f"{{{W}}}br")) == 0
         assert len(elem.findall(f"{{{W}}}t")) == 1
 
+    def test_literal_escaped_newlines_become_br(self) -> None:
+        """Literal backslash-n (two chars) as sent by Gemini becomes <w:br/>."""
+        text = "25 Technology Park\\nReading, Berkshire\\nRG6 1PT"
+        xml = build_run_xml(text, {})
+        elem = etree.fromstring(xml.encode("utf-8"))
+        t_elems = elem.findall(f"{{{W}}}t")
+        br_elems = elem.findall(f"{{{W}}}br")
+        assert len(t_elems) == 3
+        assert len(br_elems) == 2
+        assert t_elems[0].text == "25 Technology Park"
+        assert t_elems[1].text == "Reading, Berkshire"
+        assert t_elems[2].text == "RG6 1PT"
+
+    def test_mixed_real_and_escaped_newlines(self) -> None:
+        """Both real newlines and literal backslash-n in the same string."""
+        text = "Line A\\nLine B\nLine C"
+        xml = build_run_xml(text, {})
+        elem = etree.fromstring(xml.encode("utf-8"))
+        t_elems = elem.findall(f"{{{W}}}t")
+        assert len(t_elems) == 3
+        assert [t.text for t in t_elems] == ["Line A", "Line B", "Line C"]
+
 
 class TestIsWellFormedOoxml:
     def test_valid_run(self) -> None:
