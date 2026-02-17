@@ -190,8 +190,20 @@ def _apply_size_and_color(rpr: etree._Element, formatting: dict) -> None:
         etree.SubElement(rpr, f"{{{w}}}color", {f"{{{w}}}val": formatting["color"]})
 
 
+def _add_text_element(parent: etree._Element, text: str) -> None:
+    """Add a <w:t> element to parent, setting xml:space="preserve" when needed."""
+    w = NAMESPACES["w"]
+    t_elem = etree.SubElement(parent, f"{{{w}}}t")
+    t_elem.text = text
+    if text and (text[0] == " " or text[-1] == " "):
+        t_elem.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+
+
 def build_run_xml(text: str, formatting: dict) -> str:
     """Build a <w:r> element with the given text and inherited formatting.
+
+    When text contains newlines, splits on \\n and inserts <w:br/> elements
+    between segments — producing the same output as pressing Enter in Word.
 
     Returns a string of well-formed OOXML.
     """
@@ -204,9 +216,10 @@ def build_run_xml(text: str, formatting: dict) -> str:
         _apply_style_properties(rpr, formatting)
         _apply_size_and_color(rpr, formatting)
 
-    t_elem = etree.SubElement(r_elem, f"{{{w}}}t")
-    t_elem.text = text
-    if text and (text[0] == " " or text[-1] == " "):
-        t_elem.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    segments = text.split("\n")
+    _add_text_element(r_elem, segments[0])
+    for segment in segments[1:]:
+        etree.SubElement(r_elem, f"{{{w}}}br")
+        _add_text_element(r_elem, segment)
 
     return etree.tostring(r_elem, encoding="unicode")

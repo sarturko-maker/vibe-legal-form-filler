@@ -197,6 +197,23 @@ class TestBuildRunXml:
         # Should parse without error
         etree.fromstring(xml.encode("utf-8"))
 
+    def test_newlines_become_br_elements(self) -> None:
+        xml = build_run_xml("Line 1\nLine 2\nLine 3", {})
+        elem = etree.fromstring(xml.encode("utf-8"))
+        t_elems = elem.findall(f"{{{W}}}t")
+        br_elems = elem.findall(f"{{{W}}}br")
+        assert len(t_elems) == 3
+        assert len(br_elems) == 2
+        assert t_elems[0].text == "Line 1"
+        assert t_elems[1].text == "Line 2"
+        assert t_elems[2].text == "Line 3"
+
+    def test_single_line_no_br(self) -> None:
+        xml = build_run_xml("No newlines here", {})
+        elem = etree.fromstring(xml.encode("utf-8"))
+        assert len(elem.findall(f"{{{W}}}br")) == 0
+        assert len(elem.findall(f"{{{W}}}t")) == 1
+
 
 class TestIsWellFormedOoxml:
     def test_valid_run(self) -> None:

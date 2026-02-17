@@ -704,6 +704,41 @@ class TestWriteAnswersWithAnswerText:
         assert "Answer One" in result.body_xml
         assert "Answer Two" in result.body_xml
 
+    def test_multiline_answer_text_produces_line_breaks(
+        self, table_docx: bytes
+    ) -> None:
+        """Newlines in answer_text become <w:br/> elements, not literal \\n."""
+        xpath = "./w:tbl[1]/w:tr[2]/w:tc[2]/w:p[1]"
+        answers = [AnswerPayload(
+            pair_id="q1",
+            xpath=xpath,
+            answer_text="Line one\nLine two\nLine three",
+            mode=InsertionMode.REPLACE_CONTENT,
+        )]
+
+        result_bytes = write_answers(table_docx, answers)
+
+        result = extract_structure(result_bytes)
+        body = etree.fromstring(result.body_xml.encode("utf-8"))
+        target = body.xpath(xpath, namespaces=NAMESPACES)[0]
+        run = target.find(f".//{{{W}}}r")
+        assert run is not None
+
+        # Should have 3 w:t elements (one per line)
+        t_elems = run.findall(f"{{{W}}}t")
+        assert len(t_elems) == 3
+        assert t_elems[0].text == "Line one"
+        assert t_elems[1].text == "Line two"
+        assert t_elems[2].text == "Line three"
+
+        # Should have 2 w:br elements (between lines)
+        br_elems = run.findall(f"{{{W}}}br")
+        assert len(br_elems) == 2
+
+        # No literal \n in any text element
+        for t in t_elems:
+            assert "\n" not in (t.text or "")
+
 
 # ── Full pipeline test ───────────────────────────────────────────────────────
 
